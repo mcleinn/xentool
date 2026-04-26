@@ -1,0 +1,262 @@
+                    User guide (3.0.0)
+
+Introduction
+
+          This user manual describes the functionalities of the keyboard used without the Exquis
+          application, that is to say connected via USB, MIDI DIN or CV, to third-party software,
+          hardware synthesizer, or modular synthesizer.
+
+          The features currently available and presented here are subject to change. Don't forget to
+          watch for updates!
+
+          For any questions about your use of Exquis, do not hesitate to contact the community of
+          players through its various points of contact; members of the Intuitive Instruments team or
+          other users will be able to respond and share it with the community.
+
+          For technical issues, contact support at dualo.com/en/support.
+
+Essential to know
+
+          You can use Exquis:
+                 · in MPE (MIDI Polyphonic Expression) on multiple MIDI channels simultaneously, with
+                     synthesizers and software that are specifically compatible or that partially support it
+                 · in "classic" MIDI (Polyphonic aftertouch) on a single MIDI channel, with any
+                     synthesizer and software
+
+          Configure Exquis accordingly from the Settings (2) menu.
+
+          Also configure your synthesizer or software accordingly; if you use Exquis in MPE on a
+          synthesizer or software that isn't officially compatible, the latter is probably able to listen to all
+          MIDI channels (often labeled "All" or "Omni" in the MIDI input channel selector). Otherwise,
+          use Exquis in Polyphonic aftertouch mode on the same selected channel.
+
+          If you are using Exquis with MIDI cables, the two communication types A and B are
+          incompatible (and rarely indicated); make sure to use the supplied adapters or any other MIDI
+          TRS Type A adapter.
+
+                                                                                                                1
+Connectors
+
+          The Exquis keyboard allows connection:
+                 · in USB (USB-C connector), for power supply and use with third-party software (e.g.
+                     Ableton Live, Garage Band, etc.)
+                 · in MIDI (MIDI IN and OUT minijack connectors), for use with third-party software or
+                     hardware synthesizers
+                 · in CV 0-5V ("GATE", "PITCH" and "MOD" minijack connectors), for use with modular
+                     synthesizers
+
+          The Exquis keyboard has a Kensington Nano Security SlotTM for a suitable anti-theft device.
+
+Startup
+
+          The Exquis keyboard simply requires power supply via USB (5 V and 0.9A max), for example
+          from a computer, a suitable power supply, or even an external battery. The keyboard starts
+          automatically once plugged.
+
+Controls
+
+          From bottom to top, the Exquis keyboard features:
+                 · 10 backlit action push buttons
+                 · 1 continuous capacitive slider divided into 6 zones with light feedback
+                 · 61 backlit hex keys, sensitive to:
+                         o velocity: strike and lift force
+                         o horizontal tilt: X, Pitch Bend
+                         o vertical tilt: Y, CC#74
+                         o pressure: Z axis, Channel Pressure or Polyphonic Aftertouch
+                 · 4 clickable rotary encoders with light feedback
+
+MIDI THRU
+
+          When received in MIDI IN, following CC MIDI are sent via USB and MIDI OUT:
+                · CC#64: sustain pedal (standard)
+                · CC#11: expression pedal (standard)
+                · CC#65: portamento on/off
+                · CC#67: soft pedal
+
+                                                                                                                2
+Keyboard
+
+          By default, the Exquis keyboard arranges consecutive notes (semitones) horizontally, and
+          harmonious notes (thirds) vertically, from the lowest at the bottom to the highest at the top:
+
+          Harmonious chords (several notes played simultaneously), stacking of thirds, are embodied in
+          simple, continuous and ergonomic shapes:
+
+                                          ...
+
+          The most common scales (selection of notes giving the tone of a piece) result from the
+          assembly of two 4-note chords; they are thus embodied on the keyboard in the form of a
+          continuous luminous double-strand, allowing you to play in tune and improvise effortlessly.
+          When plugged in, the keyboard displays the C major scale by default (C D E F G A B).
+          Playing chords within the scale allows you to construct coherent and harmonious chord charts.
+          With one hand or two hands, explore and compare the different scales to create ever more
+          different pieces!
+
+                                                                                                                3
+Play
+
+1. Settings (1) (hold): keyboard
+settings.
+
+2. Settings (2) (hold): MIDI and layout
+settings.
+
+3. MIDI CC#32, click to activate
+4. MIDI CC#33, hold to activate
+5. MIDI CC#34, hold to activate
+Default values are editable in the
+Exquis app: Menu > Standalone
+settings
+
+6. MIDI clock play (green) / stop
+(orange)
+
+7. Octave: transpose the keyboard,
+one octave (12 semitones) at a time, to
+play higher or lower.
+
+8. Slider: arpeggiator speed (ordered
+repetition of notes held on the
+keyboard). The pattern and mode are to
+be set in the settings menu. The values
+are expressed according to the units of
+time: 4 = quarter note, 8 = eighth note,
+16 = sixteenth note,... 1/4 is equivalent
+to 1 note per beat, 1/8 to 2 notes per
+beat, 1/16 to 4 notes per beat,...
+
+9. MIDI CC#41, click CC#21                 1/4 1/6 1/8 1/12 1/16 1/24
+10. MIDI CC#42, click CC#22
+11. MIDI CC#43, click CC#23
+12. MIDI CC#44
+Default values are editable in the
+Exquis app: Menu > Standalone
+settings
+
+12. Freeze (click): Freeze notes !
+Hold and modulate notes with your fingers, then briefly click the rotary encoder to lock them.
+Add more notes the same way, or unfreeze notes by touching them again. Disable all frozen
+notes by briefly clicking the rotary encoder when no notes are being held. You can use this
+function in combination with the arpeggiator.
+
+                                                                                                4
+Settings (1)
+
+1. MIDI clock output: USB (red), DIN
+(blue), both (magenta), none (white).
+
+2. Transpose: keyboard shift one
+semitone at a time. Particularly useful
+for recentering the scale on the
+keyboard.
+
+3. Slider: arpeggiator pattern. The
+animation of the 6 LEDs of the slider
+shows the chosen pattern. Briefly touch
+the slider to change the pattern:
+- Order: in order of note triggering
+- Up: from the lowest to the highest
+- Down: from the highest to the lowest
+- Convergent: from outside to inside
+- Divergent: from inside to outside
+- Note repeat: notes are repeated
+simultaneously
+Hold your finger on the slider for a
+second to switch from « latch » mode
+(hold while playing) to « toggle » mode
+(touch to activate/deactivate).
+
+4. Internal tempo: used by the
+arpeggiator and MIDI clock, 120 by
+default. Follows the MIDI clock received
+via USB or MIDI DIN (if two clocks are
+received, follows the first).
+
+5. Tonic note: central note of a song,
+around which to build your melodies
+and chord charts (A=la, B=si, C=do,
+...).
+
+6. Scale: notes giving the tone of the              11. Major Pentatonic
+piece. Try different scales and follow              12. Minor Pentatonic
+the lights to make a harmonious piece.              13. Whole Tone
+By default:                                         14. Chromatic
+
+          1. Major                        7. Keyboard brightness (turn) / sensitivity
+          2. Natural Minor                (click + turn) : adjustment of the keyboard global
+          3. Melodic Minor                key trigger threshold, from 1 to 99, by default at
+          4. Harmonic Minor               50. Warning: a low setting can cause unwanted
+          5. Dorian                       note triggers.
+          6. Phrygian
+          7. Lydian                       8. Firmware version (hold):
+          8. Mixolydian                   X.X.X = major.minor.patch = top.middle.bottom
+          9. Locrian
+          10. Phrygian dominant
+
+                                          5
+Settings (2)
+
+          1. MPE / Poly aftertouch: behaviour of
+          MIDI channels sent via USB or MIDI
+          DIN. Switch the mode by clicking on the
+          rotary encoder:
+          - MIDI Polyphonic Expression (blue
+          LED): control on the X Y and Z axes
+          independent by key, one note per
+          channel. Channel 1 is used for global
+          messages, rotating the rotary encoder
+          allows you to edit the number of
+          additional MIDI channels, shown on the
+          keyboard (1 to 14). A setting of 14 is
+          recommended unless specific need.
+          Channel 16 is used for communication
+          with DAWs (e.g. Remote Script for
+          Ableton Live).
+          - Poly aftertouch (yellow LED):
+          independent Z-axis control per note.
+          You can choose the channel on which
+          you send the notes, shown on the
+          keyboard (1 to 16).
+
+          2. Per note pitchbend range: in MPE,
+          expressed in forty-eighths of the
+          maximum range. Two use cases:
+          - Set the Pitchbend range of the
+          synthesizer used to 48 (generally the
+          default value), then set this parameter.
+          - Set this parameter to 48, then set the
+          Pitchbend range of the synthesizer
+          used.
+          In CV, expressed in semitones.
+
+          3. Note layout. By default:
+                     1. Exquis
+                     2. Exquis with duplicates
+                     (duplicate notes of the scale are
+                     on)
+                     3. Chromatic
+                     4. 4x4 for drums (MIDI values
+                     from 36 to 51)
+                     5. General MIDI percussion
+                     (MIDI values from 35 to 81)
+                     6. Rainbow (MIDI values from 0
+                     to 60)
+
+                                                                                                                6
+MIDI score
+
+          The Exquis keyboard will display, in green, all notes it receives via MIDI IN or USB. If a note is
+          lower or higher than the notes displayed on the keyboard, the associated octave button lights
+          up instead.
+          The display algorithm is optimized for Exquis note layout, showing no duplicate notes but
+          prioritizing notes of the scale or the closest.
+
+Saving and resetting
+
+          All settings are automatically saved when exiting the settings menu, and kept when the
+          keyboard is unplugged.
+          You can reset default settings by holding the 2nd rotary encoder clicked while plugging into a
+          power source.
+
+                                                                                                                7
+

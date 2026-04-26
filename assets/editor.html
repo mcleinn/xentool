@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Xentool Layout Editor</title>
+  <link rel="stylesheet" href="/editor.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">Xentool Layout Editor</div>
+    <div class="tuning-info">
+      <label>Edo <input type="number" id="edo" min="1" max="127" step="1" size="3"></label>
+      <label>PitchOffset <input type="number" id="pitchOffset" step="1" size="4"></label>
+    </div>
+    <div class="view-toggle">
+      <label><input type="radio" name="viewMode" value="combined" checked> Combined</label>
+      <label><input type="radio" name="viewMode" value="individual"> Individual</label>
+    </div>
+    <div class="layout-picker">
+      <label>Layout <select id="layoutSelect"></select></label>
+    </div>
+    <div class="actions">
+      <label class="file-label" id="globalImportLabel">
+        Import<input type="file" id="importFile" accept=".ltn,.wtn,.xtn" style="display:none">
+      </label>
+      <button id="applyImport" disabled>Apply import</button>
+      <button id="cancelImport" disabled>Cancel</button>
+      <button id="save">Save</button>
+      <span id="status" class="status"></span>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="boards" id="boards"></section>
+    <aside class="sidebar">
+      <h2>Edit</h2>
+      <div id="selectionInfo" class="selection-info">No selection</div>
+      <div class="field">
+        <label>Key (MIDI note 0-127)</label>
+        <input type="number" id="edKey" min="0" max="127" step="1">
+      </div>
+      <div class="field">
+        <label>Chan (1-16)</label>
+        <input type="number" id="edChan" min="1" max="16" step="1">
+      </div>
+      <div class="field">
+        <label>Color</label>
+        <input type="color" id="edColor">
+      </div>
+      <button id="apply">Apply to selection</button>
+      <div class="bulk">
+        <h3>Enumerate</h3>
+        <div class="field">
+          <label>Starting Key</label>
+          <input type="number" id="enumStart" value="0" min="0" max="127">
+        </div>
+        <div class="field">
+          <label>Step</label>
+          <input type="number" id="enumStep" value="1" step="1">
+        </div>
+        <button id="enumerate">Enumerate selection (pad-id order)</button>
+      </div>
+      <details class="gen-section" open>
+        <summary>Generators</summary>
+        <div class="gen-grid">
+          <div class="field">
+            <label>Gen A (right, (0,2))</label>
+            <div class="gen-row">
+              <input type="number" id="genA" value="5" step="1">
+              <select id="genAPreset"></select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Gen B (up-right, (1,1))</label>
+            <div class="gen-row">
+              <input type="number" id="genB" value="8" step="1">
+              <select id="genBPreset"></select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Base pad (sets origin pitch)</label>
+            <div class="gen-row">
+              <select id="baseBoard"></select>
+              <input type="number" id="basePad" value="0" min="0" max="60">
+            </div>
+            <div class="gen-row">
+              <span class="gen-inline">Key <input type="number" id="baseKey" value="60" min="0" max="127"></span>
+              <span class="gen-inline">Chan <input type="number" id="baseChan" value="1" min="1" max="16"></span>
+            </div>
+          </div>
+          <div class="field">
+            <label>Palette (click swatch to edit)</label>
+            <div id="paletteSwatches" class="palette"></div>
+          </div>
+          <div class="gen-buttons">
+            <button id="btnGuess">Guess from layout</button>
+            <button id="btnApplyGen">Apply to all boards</button>
+            <button id="btnRepairGen">Repair board</button>
+            <button id="btnVerifyGen">Verify</button>
+            <button id="btnClearMismatch">Clear markers</button>
+          </div>
+          <div id="genStatus" class="gen-status"></div>
+        </div>
+      </details>
+      <details class="gen-section" open>
+        <summary>Colors in use</summary>
+        <div id="colorsInUse" class="colors-in-use">
+          <div class="hints-small">Click a swatch to recolor every pad using that color.</div>
+        </div>
+      </details>
+      <div class="hints">
+        <p>Click to select a pad. Shift+click adds; Ctrl+click toggles.</p>
+        <p>During import: arrow keys translate, <kbd>R</kbd> rotates 60° around hovered pad, <kbd>Enter</kbd> applies, <kbd>Esc</kbd> cancels.</p>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/editor.js"></script>
+</body>
+</html>
