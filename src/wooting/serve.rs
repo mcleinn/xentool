@@ -5,11 +5,12 @@
 //! no logging inside the loop. Startup + shutdown paths may print.
 
 use anyhow::{Context, Result};
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use midir::{MidiOutput, MidiOutputConnection};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,10 @@ use crate::wooting::hidmap::{
 };
 use crate::wooting::modes::{AftertouchMode, VelocityProfile, default_velocity_profiles};
 use crate::wooting::rgb;
+use crate::wooting::ui::{
+    DeviceLine, HeldKeyDisplay, SNAPSHOT_INTERVAL, WootingSnapshot, run_wooting_serve_ui,
+    snapshot_due,
+};
 use crate::wooting::wtn::{Wtn, WtnCell, parse_wtn};
 
 // --- Tunables ---
@@ -98,6 +103,7 @@ enum KeyState {
         peak_speed: f32,
         at_level: f32,
         last_pressure_sent: u8,
+        held_since: Instant,
     },
 }
 
@@ -321,6 +327,7 @@ fn step_musical_key(
             ref mut peak_speed,
             ref mut at_level,
             ref mut last_pressure_sent,
+            held_since: _,
         } => {
             if analog_val > *peak {
                 *peak = analog_val;
@@ -438,6 +445,7 @@ fn emit_peak_note_ons(
                 peak_speed,
                 at_level: 0.0,
                 last_pressure_sent: 0,
+                held_since: Instant::now(),
             },
         );
     }
@@ -600,10 +608,11 @@ pub fn cmd_serve_wtn(
     spawn_rgb_worker(rgb_rx);
     analog::with_sdk(|_| Ok(()))?;
 
-    // Ctrl-C.
-    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    // Shutdown flag — set by Ctrl-C and by the TUI on `q`.
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_ctrlc = shutdown.clone();
     ctrlc::set_handler(move || {
-        let _ = stop_tx.send(());
+        shutdown_ctrlc.store(true, Ordering::Relaxed);
     })
     .context("failed to set Ctrl+C handler")?;
 
@@ -634,10 +643,29 @@ pub fn cmd_serve_wtn(
     let mut last_hotplug = Instant::now();
     refresh_devices(&mut device_index_by_id)?;
 
-    println!(
+    // TUI plumbing. Snapshot channel is bounded(2) + try_send so the hot
+    // loop never blocks; the receiver always reads the freshest one. Log
+    // channel is bounded(64) and only written to on state transitions
+    // (layout cycle, aftertouch toggle, screensaver), never per poll.
+    let (snap_tx, snap_rx) = bounded::<WootingSnapshot>(2);
+    let (log_tx, log_rx) = bounded::<String>(64);
+    let _ = log_tx.try_send(format!(
         "xentool serve: {edo}-EDO | MIDI → `{midi_port}` | MTS-ESP master registered"
+    ));
+    let _ = log_tx.try_send(
+        "xentool serve: polling Wooting(s) at ~1 kHz (Ctrl+C / q to stop)".to_string(),
     );
-    println!("xentool serve: polling Wooting(s) at ~1 kHz (Ctrl+C to stop)");
+    let shutdown_ui = shutdown.clone();
+    let ui_handle = thread::spawn(move || {
+        if let Err(e) = run_wooting_serve_ui(snap_rx, log_rx, shutdown_ui) {
+            eprintln!("xentool serve TUI error: {e}");
+        }
+    });
+    let mut next_snapshot_at = Instant::now() + SNAPSHOT_INTERVAL;
+    let mut active_layout_filename: String = active_wtn_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
 
     let initial_pairs: Vec<(u8, u8)> = device_index_by_id
         .values()
@@ -659,7 +687,7 @@ pub fn cmd_serve_wtn(
     let mut states: HashMap<DeviceId, DeviceState> = HashMap::new();
 
     loop {
-        if stop_rx.try_recv().is_ok() {
+        if shutdown.load(Ordering::Relaxed) {
             break;
         }
         if last_hotplug.elapsed() >= HOTPLUG_INTERVAL {
@@ -802,6 +830,7 @@ pub fn cmd_serve_wtn(
                 // Screensaver wake: first-press after blanking is consumed.
                 if !was_pressed && screensaver_active {
                     screensaver_active = false;
+                    let _ = log_tx.try_send("screensaver: wake".to_string());
                     suppressed_keys.insert((device_id, hid_code));
                     pressed_keys.insert((device_id, hid_code));
                     let pairs: Vec<(u8, u8)> = device_index_by_id
@@ -830,11 +859,21 @@ pub fn cmd_serve_wtn(
                         // Action on key-down.
                         match hid_code {
                             hid::SPACE => {
-                                if octave_hold_by_device.contains(&device_id) {
+                                let now_held = if octave_hold_by_device.contains(&device_id) {
                                     octave_hold_by_device.remove(&device_id);
+                                    false
                                 } else {
                                     octave_hold_by_device.insert(device_id);
-                                }
+                                    true
+                                };
+                                let board = device_index_by_id
+                                    .get(&device_id)
+                                    .copied()
+                                    .unwrap_or(0);
+                                let _ = log_tx.try_send(format!(
+                                    "octave hold board{board}: {}",
+                                    if now_held { "ON" } else { "OFF" }
+                                ));
                             }
                             hid::RIGHT_ALT => {
                                 let now = Instant::now();
@@ -848,6 +887,10 @@ pub fn cmd_serve_wtn(
                                         AftertouchMode::Off => settings.press_threshold,
                                         _ => settings.aftertouch_press_threshold,
                                     };
+                                    let _ = log_tx.try_send(format!(
+                                        "aftertouch: {}",
+                                        aftertouch_mode.name()
+                                    ));
                                 }
                             }
                             hid::ARROW_LEFT => {
@@ -960,6 +1003,14 @@ pub fn cmd_serve_wtn(
                                             // Swap active layout.
                                             wtn = new_wtn;
                                             active_wtn_path = new_path.clone();
+                                            active_layout_filename = active_wtn_path
+                                                .file_name()
+                                                .map(|n| n.to_string_lossy().into_owned())
+                                                .unwrap_or_default();
+                                            let _ = log_tx.try_send(format!(
+                                                "layout: {}",
+                                                active_layout_filename
+                                            ));
 
                                             // Repaint LEDs.
                                             let pairs: Vec<(u8, u8)> = device_index_by_id
@@ -1116,6 +1167,27 @@ pub fn cmd_serve_wtn(
                 control_bar::paint_off(&rgb_tx, &settings.control_bar, rgb_idx);
             }
             screensaver_active = true;
+            let _ = log_tx.try_send("screensaver: blanking LEDs (idle)".to_string());
+        }
+
+        // --- Snapshot for the TUI (drop on overflow). ---
+        let now = Instant::now();
+        if snapshot_due(now, &mut next_snapshot_at) {
+            let snap = build_snapshot(
+                edo,
+                &midi_port,
+                &active_layout_filename,
+                aftertouch_mode,
+                &velocity_profiles[velocity_profile_idx.min(velocity_profiles.len() - 1)],
+                manual_press_threshold,
+                aftertouch_speed_max,
+                screensaver_active,
+                &device_index_by_id,
+                &octave_hold_by_device,
+                &states,
+                now,
+            );
+            let _ = snap_tx.try_send(snap);
         }
 
         thread::sleep(POLL_INTERVAL);
@@ -1123,8 +1195,82 @@ pub fn cmd_serve_wtn(
 
     midi.all_notes_off();
     drop(master);
-    println!("xentool serve: shutdown.");
+    let _ = log_tx.try_send("xentool serve: shutdown.".to_string());
+    // Drop senders so the UI thread's recv_timeout returns Disconnected and
+    // the loop exits cleanly.
+    drop(snap_tx);
+    drop(log_tx);
+    let _ = ui_handle.join();
     Ok(())
+}
+
+/// Builds a single TUI snapshot from the live serve-loop state.
+///
+/// Allocations: one `Vec<HeldKeyDisplay>` (≤ N held keys) plus one
+/// `Vec<DeviceLine>` (≤ device count). Both are tiny and bounded; called at
+/// 25 Hz so the cost is negligible vs the 1 ms hot-loop budget.
+#[allow(clippy::too_many_arguments)]
+fn build_snapshot(
+    edo: i32,
+    midi_port: &str,
+    layout_filename: &str,
+    aftertouch_mode: AftertouchMode,
+    velocity_profile: &VelocityProfile,
+    manual_press_threshold: f32,
+    aftertouch_speed_max: f32,
+    screensaver_active: bool,
+    device_index_by_id: &HashMap<DeviceId, u8>,
+    octave_hold_by_device: &HashSet<DeviceId>,
+    states: &HashMap<DeviceId, DeviceState>,
+    now: Instant,
+) -> WootingSnapshot {
+    let mut held_keys: Vec<HeldKeyDisplay> = Vec::new();
+    for (device_id, ds) in states.iter() {
+        let wtn_board = device_index_by_id.get(device_id).copied().unwrap_or(0);
+        for ks in ds.keys.values() {
+            if let KeyState::Held {
+                out_ch,
+                note,
+                last_pressure_sent,
+                held_since,
+                ..
+            } = *ks
+            {
+                let age_ms = now.saturating_duration_since(held_since).as_millis() as u32;
+                held_keys.push(HeldKeyDisplay {
+                    wtn_board,
+                    channel: out_ch,
+                    note,
+                    pressure: last_pressure_sent,
+                    age_ms,
+                });
+            }
+        }
+    }
+    held_keys.sort_by_key(|k| (k.wtn_board, k.channel, k.note));
+
+    let mut octave_holds: Vec<DeviceLine> = device_index_by_id
+        .iter()
+        .map(|(id, &wtn_board)| DeviceLine {
+            wtn_board,
+            octave_hold: octave_hold_by_device.contains(id),
+        })
+        .collect();
+    octave_holds.sort_by_key(|d| d.wtn_board);
+
+    WootingSnapshot {
+        edo,
+        midi_port: midi_port.to_string(),
+        layout_filename: layout_filename.to_string(),
+        aftertouch_mode_name: aftertouch_mode.name(),
+        velocity_profile_name: velocity_profile.name(),
+        manual_press_threshold,
+        aftertouch_speed_max,
+        screensaver_active,
+        device_count: device_index_by_id.len() as u8,
+        octave_holds,
+        held_keys,
+    }
 }
 
 #[cfg(test)]

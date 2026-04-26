@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::exquis_proto::Color;
+use crate::exquis::proto::Color;
 
 /// A single pad entry from an .xtn file.
 #[derive(Debug, Clone)]

@@ -13,24 +13,37 @@ cargo run -- help  # run the CLI
 
 This is a Rust CLI (`src/main.rs`, binary `xentool`) for the Intuitive Instruments Exquis MPE controller and for Wooting analog keyboards (xenwooting use case).
 
-Key modules:
-- `src/exquis_proto.rs` — Exquis SysEx message builders, Color type, zone bitmasks, control ID mapping
-- `src/cli.rs` — clap command definitions
-- `src/main.rs` — command handlers
-- `src/midi.rs` — MIDI device discovery and I/O (Exquis backend)
-- `src/mpe.rs` — MPE event decoding (pitch bend → X, CC74 → Y, pressure → Z)
-- `src/ui.rs` — terminal UI for hybrid MIDI monitoring
-- `src/logging.rs` — JSONL session logging
-- `src/xtn.rs` — .xtn layout file parser (INI-style, compatible with .wtn/.ltn)
-- `src/config.rs` — device config (devices.json) for multi-Exquis logical board names + board sync
-- `src/tuning.rs` — pitch bend retuning engine (per-channel state, note remapping, bend injection)
-- `src/mts.rs` — MTS-ESP FFI bindings via libloading (runtime-loaded LIBMTS.dll)
-- `src/geometry.rs` — hex grid tuples for Exquis/LTN/WTN and hex rotation math
-- `src/edit.rs` — web-based visual editor (rouille HTTP server, embedded HTML/JS via include_str!)
-- `src/wooting/` — Wooting backend (analog SDK polling, RGB SDK, .wtn parsing, MTS-ESP serve)
-- `src/settings.rs` — central settings.json (`exquis` section reserved; `wooting` section ports xenwooting defaults verbatim)
-- `src/layouts.rs` — shared `.wtn` / `.xtn` discovery and cycle order
-- `assets/editor.{html,css,js}` — frontend for the editor (vanilla JS, SVG hex rendering)
+Top-level (cross-device or pure tooling):
+- `src/main.rs` — thin dispatcher: parses CLI, routes `.wtn` → Wooting backend, `.xtn` → Exquis backend, holds the multi-device `cmd_list`/`cmd_geometries`/`cmd_geometry`.
+- `src/cli.rs` — clap command definitions.
+- `src/config.rs` — device config (devices.json) for multi-Exquis logical board names + board sync.
+- `src/edit.rs` — web-based visual editor (rouille HTTP server, embedded HTML/JS via include_str!), edits .xtn / .wtn / .ltn.
+- `src/geometry.rs` — hex grid tuples for Exquis/LTN/WTN and hex rotation math.
+- `src/layouts.rs` — shared `.wtn` / `.xtn` discovery and cycle order.
+- `src/logging.rs` — JSONL session logging.
+- `src/mts.rs` — MTS-ESP FFI bindings via libloading (runtime-loaded LIBMTS.dll). Used by both backends.
+- `src/settings.rs` — central settings.json (`exquis` section reserved; `wooting` section ports xenwooting defaults verbatim).
+- `src/xtn.rs` — .xtn layout file parser (INI-style, compatible with .wtn/.ltn).
+
+Exquis backend (`src/exquis/`):
+- `commands.rs` — Exquis CLI command handlers (`cmd_dev`, `cmd_pads`, `cmd_pad_set`, `cmd_serve`, `cmd_new`, `cmd_load`, `cmd_control`, `cmd_highlight`, `cmd_midi`).
+- `proto.rs` — Exquis SysEx message builders, Color type, zone bitmasks, control ID mapping.
+- `midi.rs` — MIDI device discovery and I/O.
+- `usb.rs` — USB enumeration for Exquis hardware.
+- `mpe.rs` — MPE event decoding (pitch bend → X, CC74 → Y, pressure → Z).
+- `tuning.rs` — pitch bend retuning engine (per-channel state, note remapping, bend injection).
+- `ui.rs` — terminal UI for hybrid MIDI monitoring + serve (active-touches table, controls panel, scrolling event log).
+
+Wooting backend (`src/wooting/`):
+- `commands.rs` — Wooting CLI command handlers (`cmd_serve_wtn`, `cmd_load_wtn`, `cmd_new_wtn`, `list_wootings`).
+- `serve.rs` — 1 kHz hot loop polling the Analog SDK, emitting MIDI + RGB + MTS-ESP. Time-critical: no I/O inside the loop.
+- `ui.rs` — terminal UI for `serve` on Wooting (snapshots pushed every ~40 ms over a bounded crossbeam channel; runs on its own thread so the hot loop is never blocked).
+- `analog.rs`, `rgb.rs` — Wooting Analog and RGB SDK wrappers (libloading at runtime).
+- `wtn.rs` — `.wtn` layout file parser.
+- `hidmap.rs`, `geometry.rs`, `control_bar.rs`, `modes.rs` — HID-to-musical-key mapping, board geometry, control-bar key handling, velocity/aftertouch mode enums.
+
+Frontend assets:
+- `assets/editor.{html,css,js}` — frontend for the visual editor (vanilla JS, SVG hex rendering).
 
 ## Critical design decision: snapshot-based LED control
 

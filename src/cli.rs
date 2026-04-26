@@ -1,7 +1,7 @@
 use clap::{Args, Command, CommandFactory, Parser, Subcommand, ValueEnum};
 
-use crate::exquis_proto::{Color, ColorCorrection, NamedZone};
-use crate::midi::DeviceSelection;
+use crate::exquis::midi::DeviceSelection;
+use crate::exquis::proto::{Color, ColorCorrection, NamedZone};
 
 /// Shared color-correction options for commands that send colors to the Exquis.
 #[derive(Debug, Clone, Args)]

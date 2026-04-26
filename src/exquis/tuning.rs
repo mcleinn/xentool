@@ -183,7 +183,7 @@ impl TuningState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exquis_proto::Color;
+    use crate::exquis::proto::Color;
     use crate::xtn::PadEntry;
     use std::collections::HashMap;
 

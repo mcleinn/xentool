@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::exquis_proto::{control_display_name, control_name};
+use crate::exquis::proto::{control_display_name, control_name};
 
 #[derive(Debug, Clone)]
 pub struct InputMessage {

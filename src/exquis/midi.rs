@@ -4,8 +4,8 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::mpsc::Sender;
 
-use crate::mpe::InputMessage;
-use crate::usb::{UsbDeviceInfo, list_exquis_usb_devices};
+use crate::exquis::mpe::InputMessage;
+use crate::exquis::usb::{UsbDeviceInfo, list_exquis_usb_devices};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceSelection {

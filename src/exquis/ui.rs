@@ -16,11 +16,11 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
-use crate::exquis_proto::control_display_name;
+use crate::exquis::mpe::{ControlStateTracker, Decoder, EventBuffer, InputMessage, TouchSummary};
+use crate::exquis::proto::control_display_name;
+use crate::exquis::tuning::TuningState;
 use crate::logging::JsonlLogger;
-use crate::mpe::{ControlStateTracker, Decoder, EventBuffer, InputMessage, TouchSummary};
 use crate::mts::MtsMaster;
-use crate::tuning::TuningState;
 
 /// Shared state displayed in the serve TUI's Controls panel.
 ///

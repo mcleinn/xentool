@@ -15,4 +15,5 @@ pub mod hidmap;
 pub mod modes;
 pub mod rgb;
 pub mod serve;
+pub mod ui;
 pub mod wtn;

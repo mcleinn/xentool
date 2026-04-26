@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::mpe::{DecodedEvent, EventRecord};
+use crate::exquis::mpe::{DecodedEvent, EventRecord};
 
 pub struct JsonlLogger {
     path: PathBuf,

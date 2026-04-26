@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::midi::ExquisDevice;
+use crate::exquis::midi::ExquisDevice;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceConfig {
