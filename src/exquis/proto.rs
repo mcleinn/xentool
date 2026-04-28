@@ -234,12 +234,16 @@ pub fn fill_all_pads(color: Color) -> Vec<u8> {
 /// This works via dev mode WITHOUT taking over the pad zone, so MPE is preserved.
 /// Format: F0 00 21 7E 7F 09 [11 header bytes] [61 × (midinote, r, g, b)] F7  (262 bytes)
 /// `pads` is a slice of 61 `(midinote, Color)` tuples.
+///
+/// Header bytes were verified against the live device's GET-snapshot reply on
+/// firmware 3.0.0 (matches `00 01 01 0E 00 00 01 01 00 00 00`). PitchGridRack's
+/// `exquis.hpp:282` ships `00 01 00 0E ...` — that targets older firmware and
+/// does not work on 3.0.0; sending it silently disables MPE per-note pitch
+/// bend (X axis) on the pads, even after dev mode exits.
 pub fn snapshot_set_pads(pads: &[(u8, Color); 61]) -> Vec<u8> {
-    // Header from PitchGridRack: 17 bytes total
-    // F0 00 21 7E 7F 09 00 01 00 0E 00 00 01 01 00 00 00
     let mut bytes: Vec<u8> = vec![
         0xF0, 0x00, 0x21, 0x7E, 0x7F, 0x09,
-        0x00, 0x01, 0x00, 0x0E, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x01, 0x0E, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00,
     ];
     for &(midinote, color) in pads.iter() {
         bytes.push(midinote);

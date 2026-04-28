@@ -1073,7 +1073,7 @@ pub fn cmd_midi(args: cli::MidiArgs) -> Result<()> {
     let _connections = open_inputs(&selected, tx)?;
 
     if args.mode == cli::MidiMode::Hybrid && io::stdout().is_tty() {
-        exquis::ui::run_hybrid(rx, &mut logger, args.log_raw, args.mpe_only)
+        exquis::ui::run_hybrid(rx, &mut logger, args.log_raw, args.mpe_only, selected)
     } else {
         run_stream(rx, &mut logger, args.mode, args.log_raw, args.mpe_only)
     }

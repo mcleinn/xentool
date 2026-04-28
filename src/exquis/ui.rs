@@ -16,8 +16,9 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
+use crate::exquis::midi::{DeviceSelection, ExquisDevice, send_to_outputs};
 use crate::exquis::mpe::{ControlStateTracker, Decoder, EventBuffer, InputMessage, TouchSummary};
-use crate::exquis::proto::control_display_name;
+use crate::exquis::proto::{self, Color, control_display_name};
 use crate::exquis::tuning::TuningState;
 use crate::logging::JsonlLogger;
 use crate::mts::MtsMaster;
@@ -42,6 +43,7 @@ pub fn run_hybrid(
     logger: &mut Option<JsonlLogger>,
     log_raw: bool,
     mpe_only: bool,
+    devices: Vec<ExquisDevice>,
 ) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -54,9 +56,51 @@ pub fn run_hybrid(
     let mut active_touches = Vec::<TouchSummary>::new();
     let mut events = EventBuffer::default();
 
+    // Diagnostic takeover bisection: each hotkey fires one step of the
+    // serve/load init sequence so X-axis breakage can be traced precisely.
+    events.push("[bisect] 1=dev0x3E 2=dev0x3A 3=snap(PBR=0E) 6=snap(PBR=30) 7=snap(PBR=00) 8=snap(zeros) 9=GET-snapshot 4=paintCtrls 5=cmd04 0=exitDev q=quit".to_string());
+
     let result = loop {
         match rx.recv_timeout(Duration::from_millis(40)) {
             Ok(message) => {
+                // Capture SysEx replies (especially snapshot responses) before
+                // the decoder consumes them. A snapshot response looks like
+                // `F0 00 21 7E 7F 09 [255 bytes payload] F7`.
+                if !message.bytes.is_empty() && message.bytes[0] == 0xF0 {
+                    let bytes = &message.bytes;
+                    if bytes.len() >= 7
+                        && bytes[1] == 0x00
+                        && bytes[2] == 0x21
+                        && bytes[3] == 0x7E
+                        && bytes[5] == 0x09
+                    {
+                        let payload_end = bytes.len().saturating_sub(1); // drop F7
+                        let payload = &bytes[6..payload_end];
+                        let prefix_len = payload.len().min(11);
+                        let prefix_hex: String = payload[..prefix_len]
+                            .iter()
+                            .map(|byte| format!("{byte:02X}"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        events.push(format!(
+                            "[bisect] GOT snapshot ({} bytes) prefix: {}",
+                            payload.len(),
+                            prefix_hex
+                        ));
+                    } else {
+                        let hex: String = bytes[..bytes.len().min(24)]
+                            .iter()
+                            .map(|byte| format!("{byte:02X}"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        events.push(format!(
+                            "[bisect] sysex {} bytes: {}{}",
+                            bytes.len(),
+                            hex,
+                            if bytes.len() > 24 { " ..." } else { "" }
+                        ));
+                    }
+                }
                 controls.apply(&message.bytes);
                 let decoded = decoder.process(message);
                 if let Some(logger) = logger.as_mut() {
@@ -134,8 +178,100 @@ pub fn run_hybrid(
 
         if event::poll(Duration::from_millis(1))? {
             if let CEvent::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    break Ok(());
+                match key.code {
+                    KeyCode::Char('q') => break Ok(()),
+                    KeyCode::Char('1') => {
+                        let bytes = proto::enter_dev_mode(0x3E);
+                        let _ = send_to_outputs(&devices, DeviceSelection::All, &bytes);
+                        events.push("[bisect] sent enter_dev_mode 0x3E (with slider)".into());
+                    }
+                    KeyCode::Char('2') => {
+                        let bytes = proto::enter_dev_mode(0x3A);
+                        let _ = send_to_outputs(&devices, DeviceSelection::All, &bytes);
+                        events.push("[bisect] sent enter_dev_mode 0x3A (no slider, PitchGridRack)".into());
+                    }
+                    KeyCode::Char('3') => {
+                        let mut pads = [(0u8, Color::new(0, 32, 32)); 61];
+                        for i in 0..61u8 { pads[i as usize] = (i, Color::new(0, 32, 32)); }
+                        let bytes = proto::snapshot_set_pads(&pads);
+                        let _ = send_to_outputs(&devices, DeviceSelection::All, &bytes);
+                        events.push("[bisect] sent snapshot (61 pads, midinote=pad_id, dim cyan)".into());
+                    }
+                    KeyCode::Char('4') => {
+                        let bytes_dev = proto::enter_dev_mode(0x3E);
+                        let _ = send_to_outputs(&devices, DeviceSelection::All, &bytes_dev);
+                        for cc in [100u8, 106, 107] {
+                            let bytes = proto::set_led_color(cc, Color::new(64, 0, 96));
+                            let _ = send_to_outputs(&devices, DeviceSelection::All, &bytes);
+                        }
+                        events.push("[bisect] painted control buttons 100/106/107 (cmd 04)".into());
+                    }
+                    KeyCode::Char('5') => {
+                        let bytes = proto::set_led_color(0, Color::new(127, 0, 0));
+                        let _ = send_to_outputs(&devices, DeviceSelection::All, &bytes);
+                        events.push("[bisect] sent cmd 04 set_led_color pad 0 = red".into());
+                    }
+                    KeyCode::Char('6') => {
+                        // Snapshot with PBRange byte (offset 9 of prefix) = 0x30 (48/48 max).
+                        let mut bytes: Vec<u8> = vec![
+                            0xF0, 0x00, 0x21, 0x7E, 0x7F, 0x09,
+                            0x00, 0x01, 0x00, 0x30, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00,
+                        ];
+                        for i in 0..61u8 {
+                            bytes.push(i);    // midinote
+                            bytes.push(0);    // r
+                            bytes.push(32);   // g
+                            bytes.push(32);   // b
+                        }
+                        bytes.push(0xF7);
+                        let _ = send_to_outputs(&devices, DeviceSelection::All, &bytes);
+                        events.push("[bisect] sent snapshot with PBRange byte = 0x30 (max)".into());
+                    }
+                    KeyCode::Char('7') => {
+                        // Snapshot with PBRange byte = 0x00.
+                        let mut bytes: Vec<u8> = vec![
+                            0xF0, 0x00, 0x21, 0x7E, 0x7F, 0x09,
+                            0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00,
+                        ];
+                        for i in 0..61u8 {
+                            bytes.push(i);
+                            bytes.push(0);
+                            bytes.push(32);
+                            bytes.push(32);
+                        }
+                        bytes.push(0xF7);
+                        let _ = send_to_outputs(&devices, DeviceSelection::All, &bytes);
+                        events.push("[bisect] sent snapshot with PBRange byte = 0x00".into());
+                    }
+                    KeyCode::Char('8') => {
+                        // Snapshot with ALL prefix bytes zeroed (only F0..09 and F7 framing kept).
+                        let mut bytes: Vec<u8> = vec![
+                            0xF0, 0x00, 0x21, 0x7E, 0x7F, 0x09,
+                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                        ];
+                        for i in 0..61u8 {
+                            bytes.push(i);
+                            bytes.push(0);
+                            bytes.push(32);
+                            bytes.push(32);
+                        }
+                        bytes.push(0xF7);
+                        let _ = send_to_outputs(&devices, DeviceSelection::All, &bytes);
+                        events.push("[bisect] sent snapshot with ALL prefix bytes zero".into());
+                    }
+                    KeyCode::Char('9') => {
+                        // GET snapshot — response carries the device's current 255-byte payload.
+                        // Requires dev mode active (press '1' first).
+                        let bytes: Vec<u8> = vec![0xF0, 0x00, 0x21, 0x7E, 0x7F, 0x09, 0xF7];
+                        let _ = send_to_outputs(&devices, DeviceSelection::All, &bytes);
+                        events.push("[bisect] sent GET snapshot request (response will appear above)".into());
+                    }
+                    KeyCode::Char('0') => {
+                        let bytes = proto::exit_dev_mode();
+                        let _ = send_to_outputs(&devices, DeviceSelection::All, &bytes);
+                        events.push("[bisect] sent exit_dev_mode (mask 0x00)".into());
+                    }
+                    _ => {}
                 }
             }
         }

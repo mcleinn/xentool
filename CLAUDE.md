@@ -68,7 +68,7 @@ All messages: `F0 00 21 7E 7F [cmd] [data...] F7`
 
 - `00` — Setup dev mode (mask byte: `01`=pads, `02`=encoders, `04`=slider, `08`=up/down, `10`=settings, `20`=other)
 - `04` — Set LED color (requires zone to be taken over)
-- `09` — Snapshot (262 bytes: 17 header + 61×4 pad data + F7)
+- `09` — Snapshot (262 bytes: 17 header + 61×4 pad data + F7). Header prefix verified against fw 3.0.0 via GET-snapshot: `00 01 01 0E 00 00 01 01 00 00 00`. PitchGridRack's `exquis.hpp:282` ships `00 01 00 0E ...` (older firmware); on fw 3.0.0 the byte-2 difference silently kills MPE per-note pitch bend (X axis) until the device is reset.
 
 Dev mask `0x3A` = everything except pads and slider. This is the default for color commands.
 
