@@ -123,25 +123,28 @@ s.waitForBoot({
         ~log.value("program", chan, "num=%".format(num), src);
     });
 
-    // Channel pressure → drive the `press` parameter on every voice
-    // currently held on that channel. Loudness of the sustain body
-    // tracks this in real time.
-    MIDIdef.touch(\dbgTouch, { |val, chan, src|
-        var press = (val / 127).clip(0, 1);
-        ~log.value("aftrtch", chan, "val=%".format(val), src);
-        ~notes[chan] !? { |dict|
-            dict.do { |s| s !? { s.set(\press, press) } };
-        };
-    });
-
-    // Per-note polyphonic aftertouch (rare on Wooting; common on MPE
-    // controllers). Same mapping as channel pressure but scoped to a
-    // single (chan, num) voice.
+    // Per-note polyphonic aftertouch (0xA0). This is the primary
+    // pressure channel xentool's Wooting backend emits — see
+    // `src/wooting/serve.rs::poly_pressure`. Loudness of the sustain
+    // body for the matching `(chan, num)` voice tracks this in real
+    // time.
     MIDIdef.polytouch(\dbgPoly, { |val, num, chan, src|
         var press = (val / 127).clip(0, 1);
         ~log.value("polyAt ", chan, "note=% val=%".format(num, val), src);
         ~notes[chan] !? { |dict|
             dict[num] !? { |s| s.set(\press, press) };
+        };
+    });
+
+    // Channel pressure (0xD0). Wooting via xentool doesn't emit this
+    // path (it uses 0xA0 per-note instead), but other controllers
+    // routed to the same MIDI port might, so handle it: fan out to
+    // every voice currently held on that channel.
+    MIDIdef.touch(\dbgTouch, { |val, chan, src|
+        var press = (val / 127).clip(0, 1);
+        ~log.value("aftrtch", chan, "val=%".format(val), src);
+        ~notes[chan] !? { |dict|
+            dict.do { |s| s !? { s.set(\press, press) } };
         };
     });
 
