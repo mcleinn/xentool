@@ -96,10 +96,26 @@
     return (hasNames ? 0 : 10000) + (isInversion ? 1000 : 0) + tones * 10 + (bn ? nameScore(bn) : 0);
   }
 
-  function formatNoteUnicode(v) {
-    if (!v || !v.unicode) return '';
-    var alt = (v.alts && v.alts.length) ? (v.alts[0] && v.alts[0].unicode) : '';
-    return alt ? (v.unicode + '/' + alt) : v.unicode;
+  // Build the list of available glyph spellings for a pitch:
+  // primary unicode first, then any non-empty alts. Order is stable so
+  // a `noteVariantIndex` value persists meaningfully across renders.
+  function noteVariants(v) {
+    if (!v || !v.unicode) return [];
+    var out = [v.unicode];
+    if (Array.isArray(v.alts)) {
+      for (var i = 0; i < v.alts.length; i++) {
+        if (v.alts[i] && v.alts[i].unicode) out.push(v.alts[i].unicode);
+      }
+    }
+    return out;
+  }
+
+  function formatNoteUnicode(v, idx) {
+    var variants = noteVariants(v);
+    if (variants.length === 0) return '';
+    var n = variants.length;
+    var i = (((idx | 0) % n) + n) % n;
+    return variants[i];
   }
 
   // Fallback label used when xenharm hasn't filled the note cache for a pitch.
@@ -115,8 +131,17 @@
     return edo === 12 ? Math.floor(p / 12) - 1 : Math.floor(p / edo);
   }
 
-  // Compact "pc/octave" form (e.g. "14/3"). Used in the pcs view and inside
-  // chord-line parens so the user sees which octave a pc refers to.
+  // HTML form of pc/octave: `pc<sup class="liveOct">octave</sup>`. Used
+  // wherever pc/octave appears so the octave reads as a small
+  // superscript rather than a `pc/oct` fraction. Callers must assign
+  // to innerHTML, not textContent.
+  function pcOctHtml(p, edo) {
+    return mod(p, edo) + '<sup class="liveOct">' + octaveOf(p, edo) + '</sup>';
+  }
+
+  // Plain-text fallback (no DOM). Currently unused by render paths but
+  // kept so any non-DOM consumer (debug overlays, etc.) doesn't see
+  // `13<sub>...` in their output.
   function pcOctLabel(p, edo) {
     return mod(p, edo) + '/' + octaveOf(p, edo);
   }
@@ -132,7 +157,45 @@
     return 'o' + octaveOf(p, edo) + 'p' + mod(p, edo);
   }
   function pitchLabel(p, edo) {
-    return formatNoteUnicode(noteNameFor(edo, p)) || fallbackLabel(p, edo);
+    var idx = noteVariantIndex[p] || 0;
+    return formatNoteUnicode(noteNameFor(edo, p), idx) || fallbackLabel(p, edo);
+  }
+  // Bare note name without any octave numeral. Used as the building
+  // block for pitchLabelHtml, which appends the octave as a superscript.
+  // Falling back: 12-EDO returns "C" / "D♯" / etc. (no octave digit);
+  // other EDOs without a xenharm glyph return "p14" — debug-y, but at
+  // least won't collide with the appended `<sup>`.
+  function bareNoteName(p, edo) {
+    var idx = noteVariantIndex[p] || 0;
+    var glyph = formatNoteUnicode(noteNameFor(edo, p), idx);
+    if (glyph) return glyph;
+    if (typeof p !== 'number' || !isFinite(p)) return String(p);
+    if (typeof edo !== 'number' || edo <= 0) return String(p);
+    if (edo === 12) return EDO12_NAMES[mod(p, 12)];
+    return 'p' + mod(p, edo);
+  }
+  // HTML form of the note label: bare name + superscript octave.
+  // Callers assign to innerHTML, not textContent.
+  function pitchLabelHtml(p, edo) {
+    return escapeHtml(bareNoteName(p, edo)) +
+      '<sup class="liveOct">' + octaveOf(p, edo) + '</sup>';
+  }
+  // How many distinct spellings are available for this pitch. 0 means
+  // we'll fall back to numeric (no glyph, no cycling); 1 means there's
+  // only the primary; >=2 means a click cycles through them.
+  function variantCountForPitch(edo, p) {
+    return noteVariants(noteNameFor(edo, p)).length;
+  }
+  // Defensive HTML escape — note glyphs from xenharm shouldn't contain
+  // `<` / `&`, but treating any string as text-not-markup is safer.
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function fitText(el, container, startPx, minPx) {
@@ -172,6 +235,12 @@
   var view = 'notes'; // notes | pcs | delta | intervals
   var lastSeq = -1;
   var popoverTimer = null;
+  // abs_pitch → integer index into noteVariants(...) list for the
+  // current preferred spelling. Persists across release/press; cleared
+  // when the layout changes (pitch numbers may shift meaning across
+  // EDO / pitch_offset changes).
+  var noteVariantIndex = Object.create(null);
+  var lastLayoutId = null;
 
   function noteNameFor(edo, pitch) {
     if (!live || !live.note_names) return null;
@@ -186,9 +255,10 @@
   }
 
   // Compact interval label for the chord-line `+N (...)` decoration.
-  // Uses, in order: xenharm glyph (if cached), 12-EDO English name,
-  // else cents distance (always meaningful, even when nothing else is
-  // available for non-12 EDOs without xenharm).
+  // Uses xenharm's glyph or short form, or a 12-EDO English name.
+  // Returns '' if nothing's available — callers (computeIntervalLines)
+  // emit a bare `+N` in that case rather than a cents annotation, which
+  // is just visual noise once xenharm is wired up.
   function intervalLabel(steps, edo) {
     var iv = intervalNameFor(edo, steps);
     if (iv && iv.unicode) return iv.unicode;
@@ -197,10 +267,7 @@
       var n = englishInterval12(steps).replace(/\s+/g, '');
       if (n) return n;
     }
-    // Always-available fallback: rounded cents (≈ symbol so it's clear
-    // this is approximate — every EDO step has a non-integer cent value).
-    var cents = (steps * 1200) / edo;
-    return '~' + Math.round(cents) + 'c';
+    return '';
   }
 
   // ---------- view derivation ----------
@@ -222,12 +289,14 @@
     return Array.isArray(live && live.chord) ? live.chord : [];
   }
 
+  // Returns an HTML string. Callers assign to innerHTML so subscript
+  // octaves and per-note <span> wrappers render correctly.
   function computeMainText(pressed, edo) {
     if (pressed.length === 0) return '';
     if (view === 'pcs') {
       // Collapse to one entry per pitch class, keeping the lowest octave
-      // each pc was pressed in. Output as "pc/octave" joined with dashes,
-      // e.g. "14/3-21/3-3/4".
+      // each pc was pressed in. Output as "pc<sup>octave</sup>" joined
+      // with dashes, rendered visually like `14³-21³-3⁴`.
       var byPc = Object.create(null);
       for (var i = 0; i < pressed.length; i++) {
         var p = pressed[i];
@@ -238,21 +307,29 @@
         .map(function (s) { return parseInt(s, 10); })
         .sort(function (a, b) { return a - b; });
       return pcKeys.map(function (pc) {
-        return pc + '/' + octaveOf(byPc[pc], edo);
+        return pcOctHtml(byPc[pc], edo);
       }).join('-');
     }
     if (view === 'delta') {
       var rootPitch = pressed[0];
-      var rootName = pitchLabel(rootPitch, edo);
+      // pitchLabelHtml emits HTML (bare name + superscript octave).
+      var rootHtml = pitchLabelHtml(rootPitch, edo);
       var deltas = uniqSorted(pressed.map(function (p) { return mod(p - rootPitch, edo); }))
         .filter(function (d) { return d !== 0; });
-      var parts = [rootName + ' (' + pcOctLabel(rootPitch, edo) + ')'].concat(
+      var parts = [rootHtml + ' (' + pcOctHtml(rootPitch, edo) + ')'].concat(
         deltas.map(function (d) { return '+' + d; })
       );
       return parts.join(' ');
     }
+    // 'notes' view: each pitch becomes its own clickable span so the
+    // user can tap to cycle that note's enharmonic spelling. The span
+    // contains pre-built HTML (note glyph + superscript octave).
     return pressed.map(function (p) {
-      return pitchLabel(p, edo);
+      var inner = pitchLabelHtml(p, edo);
+      var hasAlts = variantCountForPitch(edo, p) > 1;
+      var cls = 'liveNote' + (hasAlts ? ' liveNoteAlts' : '');
+      return '<span class="' + cls + '" data-pitch="' + p + '">' +
+        inner + '</span>';
     }).join(' ');
   }
 
@@ -293,14 +370,18 @@
     for (var k = 0; k < roots.length; k++) {
       var r = roots[k];
       var rootPitch = rootPitchByPc[r.rootPc];
+      // HTML — bare note name + superscript octave when we have a real
+      // pressed pitch; plain `pcN` fallback otherwise. Either form is
+      // safe to drop straight into innerHTML downstream.
       var rootName = rootPitch !== undefined
-        ? pitchLabel(rootPitch, edo)
+        ? pitchLabelHtml(rootPitch, edo)
         : ('pc' + r.rootPc);
       // "pc/octave" tag used inside the chord-line parens; falls back to
       // pc-only if no concrete pressed pitch maps to this rootPc (rare,
       // happens when chord templates synthesise extra rotations).
+      // HTML form so the octave renders as a subscript.
       var rootPcOct = rootPitch !== undefined
-        ? pcOctLabel(rootPitch, edo)
+        ? pcOctHtml(rootPitch, edo)
         : String(r.rootPc);
       var rel = (Array.isArray(r.rel) && r.rel.length)
         ? r.rel
@@ -339,12 +420,14 @@
     popoverEl.hidden = true;
   }
 
+  // `title` is an HTML string (callers concatenate `<sub>` subscripts
+  // for octave numerals into it). Names are still plain text.
   function openPopover(title, names) {
     if (popoverTimer !== null) {
       clearTimeout(popoverTimer);
       popoverTimer = null;
     }
-    popoverTitle.textContent = title;
+    popoverTitle.innerHTML = title;
     popoverList.innerHTML = '';
     for (var i = 0; i < names.length; i++) {
       var row = document.createElement('div');
@@ -371,7 +454,10 @@
 
     var pressed = pressedCombined();
     var mainText = computeMainText(pressed, edo);
-    mainTextEl.textContent = mainText || ' ';
+    // Assign as HTML so per-note <span> wrappers and <sub> octave
+    // numerals render correctly. computeMainText escapes its plain-text
+    // pieces internally.
+    mainTextEl.innerHTML = mainText || '&nbsp;';
     fitText(mainTextEl, mainEl, 180, 22);
 
     cornerTL.textContent = layoutName;
@@ -396,7 +482,11 @@
     var lines = computeIntervalLines(pressed, edo);
     for (var i = 0; i < lines.length; i++) {
       var it = lines[i];
+      // `rootName` and `rootPcOct` are HTML fragments (note name with
+      // a superscript octave); `deltaText` is plain text and needs
+      // escaping. Assign with innerHTML below.
       var title = it.rootName + '(' + it.rootPcOct + ')';
+      var deltaHtml = escapeHtml(it.deltaText);
       var moreCount = Math.max(0, it.allNames.length - (it.bestName ? 1 : 0));
       var showMore = view !== 'intervals' && moreCount > 0;
 
@@ -405,7 +495,7 @@
         block.className = 'liveIntervalsLine liveChordBlock';
         var header = document.createElement('div');
         header.className = 'liveChordHeader';
-        header.textContent = title + it.deltaText;
+        header.innerHTML = title + deltaHtml;
         block.appendChild(header);
         for (var j = 0; j < it.allNames.length; j++) {
           var n = document.createElement('div');
@@ -420,19 +510,19 @@
         var primary = document.createElement('div');
         primary.className = 'liveChordPrimary';
         // Empty when no chord-DB match — the secondary line below shows
-        // delta steps with cents (or xenharm interval names) which is
-        // always informative on its own. No cryptic placeholder.
+        // delta steps with xenharm interval names (when available) which
+        // is always informative on its own. No cryptic placeholder.
         primary.textContent = it.bestName || '';
         if (showMore) {
           var btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'liveMoreBtn';
           btn.textContent = '(+' + moreCount + ')';
-          (function (theTitle, theNames) {
+          (function (theTitleHtml, theNames) {
             btn.addEventListener('pointerup', function (ev) {
               ev.preventDefault();
               ev.stopPropagation();
-              openPopover(theTitle + ' alternatives', theNames);
+              openPopover(theTitleHtml + ' alternatives', theNames);
             });
           })(title, it.allNames.slice());
           primary.appendChild(document.createTextNode(' '));
@@ -440,7 +530,7 @@
         }
         var secondary = document.createElement('div');
         secondary.className = 'liveChordSecondary';
-        secondary.textContent = title + it.deltaText;
+        secondary.innerHTML = title + deltaHtml;
         line.appendChild(primary);
         line.appendChild(secondary);
         intervalsEl.appendChild(line);
@@ -529,9 +619,30 @@
 
   // ---------- input ----------
 
+  // Per-note tap: cycle the enharmonic spelling for that pitch only.
+  // Bound on mainTextEl with delegation to .liveNote spans. Stops the
+  // event so it doesn't bubble to rootEl's view-cycle handler.
+  mainTextEl.addEventListener('pointerup', function (ev) {
+    var t = ev.target && ev.target.closest && ev.target.closest('.liveNote');
+    if (!t) return; // background click — let it bubble to rootEl.
+    ev.stopPropagation();
+    ev.preventDefault();
+    var p = parseInt(t.getAttribute('data-pitch'), 10);
+    if (!isFinite(p)) return;
+    var edo = (live && live.layout && live.layout.edo) | 0;
+    var n = variantCountForPitch(edo, p);
+    if (n <= 1) return; // single spelling, nothing to cycle.
+    noteVariantIndex[p] = ((noteVariantIndex[p] || 0) + 1) % n;
+    render();
+  });
+
   rootEl.addEventListener('pointerup', function (ev) {
     var t = ev.target;
-    if (t && t.closest && (t.closest('.liveIntervals') || t.closest('.livePopover'))) return;
+    if (t && t.closest && (
+      t.closest('.liveIntervals') ||
+      t.closest('.livePopover') ||
+      t.closest('.liveNote')
+    )) return;
     if (!popoverEl.hidden) {
       closePopover();
       return;
@@ -616,6 +727,14 @@
       if (!obj || typeof obj !== 'object') return;
       if (typeof obj.seq === 'number' && obj.seq === lastSeq) return;
       if (typeof obj.seq === 'number') lastSeq = obj.seq;
+      // Reset per-note spelling preferences when the layout changes —
+      // pitch numbers may shift meaning across EDO / pitch_offset
+      // changes, so a stored variant index is no longer trustworthy.
+      var newLayoutId = (obj.layout && obj.layout.id) || null;
+      if (newLayoutId !== lastLayoutId) {
+        noteVariantIndex = Object.create(null);
+        lastLayoutId = newLayoutId;
+      }
       live = obj;
       debugLog(obj);
       render();

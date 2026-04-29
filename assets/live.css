@@ -57,6 +57,26 @@ html, body {
   word-break: break-word;
 }
 
+/* Per-note clickable spans inside the named view. Cursor is only set
+   to pointer for notes that actually have alternate spellings to
+   cycle through — otherwise pointer would suggest a click that
+   does nothing. */
+.liveMainText .liveNote {
+  cursor: default;
+}
+.liveMainText .liveNoteAlts {
+  cursor: pointer;
+}
+
+/* Superscript octave numerals — used wherever an octave is printed
+   (named view, pcs view, delta view, intervals chord-line) so the
+   numeral reads as a small digit raised above the baseline. */
+.liveOct {
+  font-size: 0.6em;
+  font-weight: 500;
+  /* `<sup>` already raises the baseline; default vertical-align is fine. */
+}
+
 .liveIntervals {
   margin-top: 10px;
   max-width: min(1100px, 94vw);
