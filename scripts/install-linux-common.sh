@@ -363,15 +363,24 @@ WRAP
 
 write_supercollider_unit() {
     [[ "${SC_INSTALLED:-0}" == 1 ]] || return
+    # Exquis pads emit MPE; Wooting emits classic 12/N-EDO MIDI. The
+    # bundled patches handle each:
+    #   exquis  → mpe_tanpura_xentool.scd  (microtonal MPE tanpura)
+    #   wooting → midi_piano_xentool.scd   (classic-MIDI piano)
+    local sc_patch
+    case "$BACKEND" in
+        wooting) sc_patch="midi_piano_xentool.scd" ;;
+        *)       sc_patch="mpe_tanpura_xentool.scd" ;;
+    esac
     write_unit xentool-supercollider.service <<UNIT
 [Unit]
-Description=SuperCollider tanpura synth (xentool MPE → tanpura via $XENTOOL_MIDI_OUTPUT)
+Description=SuperCollider synth for xentool ($BACKEND → $sc_patch via $XENTOOL_MIDI_OUTPUT)
 After=xentool.service sound.target
 Wants=xentool.service
 
 [Service]
 Type=simple
-ExecStart=$SC_BIN $REPO_ROOT/supercollider/mpe_tanpura_xentool.scd
+ExecStart=$SC_BIN $REPO_ROOT/supercollider/$sc_patch
 WorkingDirectory=$REPO_ROOT/supercollider
 Restart=on-failure
 RestartSec=3

@@ -10,5 +10,6 @@ REM are untouched.
 
 setlocal
 set "BACKEND=exquis"
-if not defined LAYOUT set "LAYOUT=%~dp0..\xtn\edo31.xtn"
+if not defined LAYOUT    set "LAYOUT=%~dp0..\xtn\edo31.xtn"
+if not defined SC_SCRIPT set "SC_SCRIPT=mpe_tanpura_xentool.scd"
 call "%~dp0_run-all-common.bat"

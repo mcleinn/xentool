@@ -85,7 +85,9 @@ Either script will:
    note glyphs in the HUD; without it, the HUD falls back to numeric
    labels.
 6. (Optional, prompted) install **SuperCollider** + `sc3-plugins` and the
-   bundled tanpura synth (`supercollider/mpe_tanpura_xentool.scd`).
+   matching bundled patch — `supercollider/mpe_tanpura_xentool.scd` for
+   the Exquis MPE flow, `supercollider/midi_piano_xentool.scd` for the
+   Wooting classic-MIDI flow.
 7. Write `systemd --user` units (`xenharm`, `xentool`, optionally
    `xentool-supercollider`), enable user-linger, and start them in the
    right order.
@@ -122,15 +124,22 @@ xentool serve --hud
 
 #### One-click full stack (Windows Terminal)
 
-To bring up xentool, the xenharm sidecar and the SuperCollider tanpura
+To bring up xentool, the xenharm sidecar and the matching SuperCollider
 synth in **one** Windows Terminal window — three labelled tabs in
 xentool / xenharm / supercollider order, started with the right delays
 between them — pick the script for your hardware and double-click:
 
-| Hardware | Script                                | Default layout      |
-|----------|---------------------------------------|---------------------|
-| Exquis   | `scripts\run-all-exquis.bat`          | `xtn\edo31.xtn`     |
-| Wooting  | `scripts\run-all-wooting.bat`         | `wtn\edo31.wtn`     |
+| Hardware | Script                          | Default layout    | SC patch                       |
+|----------|---------------------------------|-------------------|--------------------------------|
+| Exquis   | `scripts\run-all-exquis.bat`    | `xtn\edo31.xtn`   | `mpe_tanpura_xentool.scd`      |
+| Wooting  | `scripts\run-all-wooting.bat`   | `wtn\edo31.wtn`   | `midi_piano_xentool.scd`       |
+
+The two SC patches differ on purpose: the Exquis pads emit MPE
+(per-note pitch bend, CC74, channel pressure), so the Exquis stack
+runs the **MPE tanpura** sketch that maps X/Y/Z onto string-pluck
+parameters. The Wooting keys emit classic 12/N-EDO MIDI on Lumatone-
+style channel-stripes, so the Wooting stack runs the **classic-MIDI
+piano** sketch instead.
 
 Each script:
 
@@ -145,12 +154,14 @@ Each script:
    `/health` probe sees a bound xenharm), supercollider ~5 s later
    (so `MIDIClient.init` sees xentool's MIDI port and the OSC strip
    doesn't fire into a closed UDP socket).
-4. Pins the layout (`xtn\edo31.xtn` or `wtn\edo31.wtn`) so xentool
-   loads the right backend regardless of what `settings.json` last
-   used. Set `LAYOUT` before calling either script to override:
+4. Pins the layout and the SC patch up front so xentool loads the
+   right backend regardless of what `settings.json` last used. Set
+   `LAYOUT` and / or `SC_SCRIPT` before calling either script to
+   override:
 
    ```powershell
    set LAYOUT=C:\Dev-Free\xentool\xtn\edo24.xtn
+   set SC_SCRIPT=mpe_tanpura_xentool.scd
    scripts\run-all-exquis.bat
    ```
 
@@ -273,18 +284,29 @@ absolute pitch to a Unicode SMuFL codepoint:
 If the probe fails, the HUD silently falls back to numeric / letter labels.
 Override the URL with `--xenharm-url`.
 
-#### Optional: SuperCollider tanpura synth + OSC parameter strip
+#### Optional: SuperCollider synth + OSC parameter strip
 
-The repo ships a SuperCollider sketch that turns the controller into a
-microtonal MPE-aware tanpura drone (see `supercollider/mpe_tanpura_xentool.scd`).
-It also pushes parameter changes back to the HUD via OSC — encoder turns
-and button presses appear as a sticky parameter strip plus a brief event
-log on the right edge of the HUD page.
+The repo ships two SuperCollider sketches under `supercollider/` —
+pick the one matching your controller:
 
-- **Linux:** the install scripts can install SuperCollider + the bundled
-  patch as `xentool-supercollider.service` (chained `After=xentool.service`).
-- **Manual:** start `sclang supercollider/mpe_tanpura_xentool.scd` after
-  xentool is already running.
+- `mpe_tanpura_xentool.scd` — for the **Exquis MPE** flow. Turns the
+  controller into a microtonal tanpura drone with X/Y/Z mapped to
+  string-pluck parameters.
+- `midi_piano_xentool.scd` — for the **Wooting classic-MIDI** flow.
+  A microtonal piano that listens on the channel-striped MIDI that
+  xentool emits for the Wooting backend.
+
+Both push parameter changes back to the HUD via OSC — encoder turns
+and button presses appear as a sticky parameter strip plus a brief
+event log on the right edge of the HUD page.
+
+- **Windows:** `scripts\run-all-{exquis,wooting}.bat` already starts
+  the right patch; for a single-window manual launch use
+  `scripts\start-supercollider.bat <patch>.scd`.
+- **Linux:** the install scripts wire up `xentool-supercollider.service`
+  with the patch matching the chosen backend.
+- **Manual / other platforms:** `sclang supercollider/<patch>.scd`
+  after xentool is already running.
 
 xentool listens for OSC on UDP port 9000 by default (override with
 `--osc-port`). Send `/xentool/param/<group>/<name> <value> [<unit>]` for a
