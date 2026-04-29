@@ -284,6 +284,7 @@ fn rebuild_mts_table(
 pub fn cmd_serve(
     file: std::path::PathBuf,
     pb_range: f64,
+    x_gain: f64,
     output: String,
     mts_esp: bool,
     correction: exquis::proto::ColorCorrection,
@@ -364,7 +365,7 @@ pub fn cmd_serve(
     for board in &boards {
         if let Some(bl) = layout.boards.get(&board.board_name) {
             let state =
-                exquis::tuning::TuningState::from_board(bl, edo, layout.pitch_offset, 2, pb_range);
+                exquis::tuning::TuningState::from_board(bl, edo, layout.pitch_offset, 2, pb_range, x_gain);
             board_tunings.insert(board.device.number, state);
         }
     }
@@ -614,6 +615,8 @@ pub fn cmd_serve(
         exquis::ui::run_serve_retune_ui(
             rx,
             &scale_name,
+            pb_range,
+            x_gain,
             &mut board_tunings,
             &mut midi_outputs,
             display,
@@ -665,6 +668,7 @@ pub fn cmd_serve(
                                 current_layout.pitch_offset,
                                 2 + new_shift,
                                 pb_range,
+                                x_gain,
                             ),
                         );
                         // Repaint only the OTHER arrow — its color may have
@@ -734,6 +738,7 @@ pub fn cmd_serve(
                                 new_layout.pitch_offset,
                                 2,
                                 pb_range,
+                                x_gain,
                             ),
                         );
                     }

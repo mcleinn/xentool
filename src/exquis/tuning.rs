@@ -25,6 +25,10 @@ pub struct TuningState {
     channel_pad: [Option<u8>; 16],
     /// Per-channel: our tuning bend offset (set when a note starts).
     channel_tuning_bend: [i32; 16],
+    /// Multiplier applied to the player's X-axis bend before recombining with
+    /// the tuning offset. Compensates for Exquis hardware capping physical X
+    /// output at ~2 % of the 14-bit LSB range.
+    x_gain: f64,
     /// Last retune info for UI display.
     pub last_retune_info: Option<String>,
 }
@@ -37,6 +41,7 @@ impl TuningState {
         pitch_offset: i32,
         octave_shift: i32,
         pb_range: f64,
+        x_gain: f64,
     ) -> Self {
         let lsbs_per_cent = (pb_range * 100.0) / 8192.0;
         let mut pad_tunings = [PadTuning {
@@ -80,6 +85,7 @@ impl TuningState {
             pad_tunings,
             channel_pad: [None; 16],
             channel_tuning_bend: [0; 16],
+            x_gain,
             last_retune_info: None,
         }
     }
@@ -165,11 +171,15 @@ impl TuningState {
                 vec![vec![0x90 | ch as u8, tuning.base_note, 0]]
             }
 
-            // Pitch Bend — combine player's X expression with our tuning offset
+            // Pitch Bend — combine player's X expression (amplified by x_gain to
+            // compensate for the Exquis's narrow physical X output) with our
+            // tuning offset. The tuning offset is NEVER scaled, so microtonal
+            // pitches stay exact.
             0xE0 if msg.len() >= 3 => {
                 let raw_bend = (msg[1] as i32) | ((msg[2] as i32) << 7); // 0-16383
                 let player_bend = raw_bend - 8192; // center at 0
-                let combined = (8192 + player_bend + self.channel_tuning_bend[ch]).clamp(0, 16383) as u16;
+                let amplified = (player_bend as f64 * self.x_gain).round() as i32;
+                let combined = (8192 + amplified + self.channel_tuning_bend[ch]).clamp(0, 16383) as u16;
 
                 vec![vec![0xE0 | ch as u8, (combined & 0x7F) as u8, (combined >> 7) as u8]]
             }
@@ -202,7 +212,7 @@ mod tests {
     #[test]
     fn note_on_remaps_and_injects_bend() {
         let board = make_board(&[(0, 0, 1)]); // pad 0, key 0, chan 1
-        let mut state = TuningState::from_board(&board, 31, 0, 2, 48.0);
+        let mut state = TuningState::from_board(&board, 31, 0, 2, 48.0, 1.0);
 
         // note_on on MIDI channel 2, pad 0, velocity 100
         let msgs = state.process_message(&[0x92, 0, 100]);
@@ -214,7 +224,7 @@ mod tests {
     #[test]
     fn pitch_bend_combines_with_tuning() {
         let board = make_board(&[(0, 0, 1)]);
-        let mut state = TuningState::from_board(&board, 31, 0, 2, 48.0);
+        let mut state = TuningState::from_board(&board, 31, 0, 2, 48.0, 1.0);
 
         // Start a note on channel 2
         let _ = state.process_message(&[0x92, 0, 100]);
@@ -229,7 +239,7 @@ mod tests {
     #[test]
     fn note_off_remaps_note() {
         let board = make_board(&[(5, 10, 1)]); // pad 5
-        let mut state = TuningState::from_board(&board, 31, 0, 2, 48.0);
+        let mut state = TuningState::from_board(&board, 31, 0, 2, 48.0, 1.0);
 
         // Start note
         let on_msgs = state.process_message(&[0x92, 5, 100]);
@@ -244,7 +254,7 @@ mod tests {
     #[test]
     fn cc74_passes_through() {
         let board = make_board(&[]);
-        let mut state = TuningState::from_board(&board, 31, 0, 2, 48.0);
+        let mut state = TuningState::from_board(&board, 31, 0, 2, 48.0, 1.0);
 
         let msg = vec![0xB2, 74, 100]; // CC74 on channel 2
         let msgs = state.process_message(&msg);

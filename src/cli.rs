@@ -75,9 +75,18 @@ pub enum Commands {
         /// Path to the .xtn or .wtn layout file. If omitted, the last used layout
         /// (from settings.json `last_wtn`/`last_xtn`) is resumed if present.
         file: Option<std::path::PathBuf>,
-        /// Pitch bend range in semitones (must match synth setting). Default: 2.
-        #[arg(long, default_value_t = 2.0)]
+        /// Pitch bend range in semitones (must match synth setting). Default: 16.
+        /// Set the synth's per-note PB range to ±1600 cents to match.
+        #[arg(long, default_value_t = 16.0)]
         pb_range: f64,
+        /// Gain applied to the player's X-axis pitch-bend portion before
+        /// recombining with the tuning offset. The Exquis caps physical X
+        /// output at ~±170 LSBs of the 14-bit range (~2 %), so amplification
+        /// is needed to make X audible. Default: 15 (full slide ≈ ±a perfect
+        /// fourth — sized for Indian meend / Arabic ornament work). Tuning
+        /// offset is never scaled — only player expression.
+        #[arg(long, default_value_t = 15.0)]
+        x_gain: f64,
         /// Output MIDI port name for pitch bend retuning. Default: "loopMIDI Port".
         #[arg(long, default_value = "loopMIDI Port")]
         output: String,

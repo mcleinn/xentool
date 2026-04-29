@@ -428,6 +428,8 @@ pub type RetuneCycleCallback<'a> = &'a mut dyn FnMut(
 pub fn run_serve_retune_ui(
     rx: Receiver<InputMessage>,
     scale_name: &str,
+    pb_range: f64,
+    x_gain: f64,
     tunings: &mut std::collections::HashMap<usize, TuningState>,
     outputs: &mut std::collections::HashMap<usize, midir::MidiOutputConnection>,
     display: DisplayHandle,
@@ -508,8 +510,8 @@ pub fn run_serve_retune_ui(
         }
 
         let events_title = format!(
-            "Events (q to quit) - {} | pitch bend retuning | {} notes",
-            scale_name, notes_retuned
+            "Events (q to quit) - {} | pitch bend retuning | pb_range={} x_gain={} | {} notes",
+            scale_name, pb_range, x_gain, notes_retuned
         );
 
         terminal.draw(|frame| {

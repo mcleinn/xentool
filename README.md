@@ -258,7 +258,7 @@ microtonal tuning.
 Requirements for pitch bend mode:
 - Install [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) and create a port named `loopMIDI Port` (the default)
 - In your synth (e.g. Pianoteq), disable the direct "Exquis" MIDI input and enable `loopMIDI Port` instead
-- The synth's per-note pitch bend range must match `--pb-range` (default: 2 semitones, which is Pianoteq's default)
+- The synth's per-note pitch bend range must match `--pb-range` (default: 16 semitones = ±1600 cents). Set Pianoteq's per-note PB range to ±1600 c, or pass `--pb-range 2` to keep Pianoteq's default — but that weakens the Exquis X-axis slide considerably.
 
 How pitch bend retuning works:
 1. For each pad, the target frequency is computed from the .xtn's `Key_N`/`Chan_N` and the `Edo` setting.

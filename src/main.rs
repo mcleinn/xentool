@@ -43,6 +43,7 @@ fn main() -> Result<()> {
         Commands::Serve {
             file,
             pb_range,
+            x_gain,
             output,
             mts_esp,
             color,
@@ -65,7 +66,7 @@ fn main() -> Result<()> {
             if is_wtn(&file) {
                 wooting::commands::cmd_serve_wtn(file, output, &s.wooting)
             } else {
-                cmd_serve(file, pb_range, output, mts_esp, color.to_correction()?)
+                cmd_serve(file, pb_range, x_gain, output, mts_esp, color.to_correction()?)
             }
         }
         Commands::New {

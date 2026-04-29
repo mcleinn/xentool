@@ -68,7 +68,7 @@ All messages: `F0 00 21 7E 7F [cmd] [data...] F7`
 
 - `00` — Setup dev mode (mask byte: `01`=pads, `02`=encoders, `04`=slider, `08`=up/down, `10`=settings, `20`=other)
 - `04` — Set LED color (requires zone to be taken over)
-- `09` — Snapshot (262 bytes: 17 header + 61×4 pad data + F7). Header prefix verified against fw 3.0.0 via GET-snapshot: `00 01 01 0E 00 00 01 01 00 00 00`. PitchGridRack's `exquis.hpp:282` ships `00 01 00 0E ...` (older firmware); on fw 3.0.0 the byte-2 difference silently kills MPE per-note pitch bend (X axis) until the device is reset.
+- `09` — Snapshot (262 bytes: 17 header + 61×4 pad data + F7). Header prefix verified against fw 3.0.0 via GET-snapshot: device defaults to `00 01 01 0E 00 00 01 01 00 00 00`. PitchGridRack's `exquis.hpp:282` ships `00 01 00 0E ...` (older firmware); on fw 3.0.0 the byte-2 difference silently kills MPE per-note pitch bend (X axis) until the device is reset. We override byte 9 (`PBRange`, /48 of synth's bend range) from the default `0x0E` to `0x30` (= 48/48, max) so the player gets the Exquis's full X-slide output. Combined with `--pb-range 16` this yields ±1600 c at the synth; <2 % slide clipping in 31-EDO at the worst pads.
 
 Dev mask `0x3A` = everything except pads and slider. This is the default for color commands.
 
@@ -86,7 +86,7 @@ INI-style format with `[Board0]`/`[Board1]` sections. Per pad: `Key_N`, `Chan_N`
 ### Pitch bend retuning (default, `xentool serve`)
 Intercepts MIDI from Exquis, remaps note numbers to nearest 12-TET, injects per-channel pitch bend to reach exact microtonal frequency, forwards to a virtual MIDI port (loopMIDI). MPE expression (X/Y/Z) is preserved — player X bends are added to the tuning offset. Each board has independent tuning state. Scales to 4+ boards.
 
-Key constraint: the synth's pitch bend range must match `--pb-range` (default 2 semitones = Pianoteq default).
+Key constraint: the synth's per-note pitch bend range must match `--pb-range` (default 16 semitones = ±1600 c). Set Pianoteq's MIDI per-note PB to ±1600 c, or pass `--pb-range 2` for Pianoteq's default and accept a weaker X-axis expression.
 
 ### MTS-ESP (`xentool serve --mts-esp`)
 Registers as MTS-ESP master via runtime-loaded `LIBMTS.dll` (at `C:\Program Files\Common Files\MTS-ESP\LIBMTS.dll`). Broadcasts a global 128-note tuning table. Limited to one master, one table, max 128 unique notes.

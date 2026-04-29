@@ -236,14 +236,20 @@ pub fn fill_all_pads(color: Color) -> Vec<u8> {
 /// `pads` is a slice of 61 `(midinote, Color)` tuples.
 ///
 /// Header bytes were verified against the live device's GET-snapshot reply on
-/// firmware 3.0.0 (matches `00 01 01 0E 00 00 01 01 00 00 00`). PitchGridRack's
-/// `exquis.hpp:282` ships `00 01 00 0E ...` — that targets older firmware and
-/// does not work on 3.0.0; sending it silently disables MPE per-note pitch
-/// bend (X axis) on the pads, even after dev mode exits.
+/// firmware 3.0.0 (device defaults to `00 01 01 0E 00 00 01 01 00 00 00`).
+/// PitchGridRack's `exquis.hpp:282` ships `00 01 00 0E ...` — that targets
+/// older firmware and does not work on 3.0.0; sending it silently disables
+/// MPE per-note pitch bend (X axis) on the pads, even after dev mode exits.
+///
+/// Byte 9 (`PBRange`, in /48 of the synth's bend range) is overridden to
+/// `0x30` (= 48/48 — the Exquis's max output) so the player can use the
+/// pad's full X-slide range. At `--pb-range 16` this gives full slide
+/// ±16 semitones (±1600 c) at the synth, with sub-cent tuning resolution
+/// (~5 LSB/cent) and <2 % combined-clip loss even on worst-case retunes.
 pub fn snapshot_set_pads(pads: &[(u8, Color); 61]) -> Vec<u8> {
     let mut bytes: Vec<u8> = vec![
         0xF0, 0x00, 0x21, 0x7E, 0x7F, 0x09,
-        0x00, 0x01, 0x01, 0x0E, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x01, 0x30, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00,
     ];
     for &(midinote, color) in pads.iter() {
         bytes.push(midinote);
