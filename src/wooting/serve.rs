@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
-use midir::{MidiOutput, MidiOutputConnection};
+use midir::MidiOutputConnection;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -119,16 +119,12 @@ struct MidiOut {
 }
 
 impl MidiOut {
+    /// On Linux/macOS: creates a virtual ALSA seq / CoreMIDI port that
+    /// other apps subscribe to (xenwooting's "XenWTN" pattern). On
+    /// Windows: connects to an existing virtual cable (loopMIDI Port by
+    /// default). See `crate::midi_out` for the platform branch.
     fn open(name: &str) -> Result<Self> {
-        let out = MidiOutput::new("xentool-wooting")?;
-        let port = out
-            .ports()
-            .into_iter()
-            .find(|p| out.port_name(p).ok().as_deref() == Some(name))
-            .with_context(|| format!("MIDI output port `{name}` not found"))?;
-        let conn = out
-            .connect(&port, "xentool-wooting-out")
-            .with_context(|| format!("failed to open MIDI output `{name}`"))?;
+        let conn = crate::midi_out::open_output("xentool-wooting", name)?;
         Ok(Self { conn })
     }
     fn note_on(&mut self, ch: u8, note: u8, vel: u8) -> Result<()> {

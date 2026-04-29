@@ -1,10 +1,13 @@
 // MPE tanpura — xentool-aware variant.
 //
-// Only listens on the loopMIDI port that `xentool serve` writes to (so the
-// raw Exquis port isn't double-handled), and uses ~mpeBendRange = 16 to
-// match xentool's default --pb-range. With xentool's snapshot byte 9 set to
-// 0x30 (= 48/48 — full Exquis output) and --pb-range 16, full X slide
-// produces ≈±16 semitones (±1600 c) at the synth.
+// Only listens on the virtual MIDI port that `xentool serve` writes to (so
+// the raw Exquis port isn't double-handled). Auto-detects "loopMIDI Port"
+// on Windows and "Midi Through" on Linux — both are xentool's defaults for
+// their platforms; see ~xentoolPortMatches below to extend.
+// Uses ~mpeBendRange = 16 to match xentool's default --pb-range. With
+// xentool's snapshot byte 9 set to 0x30 (= 48/48 — full Exquis output) and
+// --pb-range 16, full X slide produces ≈±16 semitones (±1600 c) at the
+// synth.
 //
 // Logs are minimal: only noteOn/noteOff are printed, and noteOn includes
 // the per-channel bend value that was active at the moment the note fired
@@ -17,9 +20,10 @@
 //   Z = aftertouch — sustain drone + jawari intensity + amp swell
 //   vel = pluck strength
 //
-// Make sure xentool serve is already running and emitting to loopMIDI Port
-// before running this script — otherwise the source-filter has nothing to
-// match and no notes will be heard.
+// Make sure xentool serve is already running and emitting to its virtual
+// MIDI port (loopMIDI Port on Windows, Midi Through on Linux) before
+// running this script — otherwise the source-filter has nothing to match
+// and no notes will be heard.
 
 s.waitForBoot({
 
@@ -109,20 +113,26 @@ s.waitForBoot({
     };
     "===========================".postln;
 
-    // Pick the loopMIDI port that xentool writes to. We match either the
-    // device or port name containing "loopMIDI" (case-insensitive). If the
-    // user runs xentool with --output set to a different port name, change
-    // ~xentoolPortMatch below.
-    ~xentoolPortMatch = "loopmidi";
+    // Pick the virtual MIDI port that xentool writes to. Matches the device
+    // or port name (case-insensitive) against any substring in
+    // ~xentoolPortMatches. Defaults cover the canonical xentool outputs on
+    // both platforms: "loopMIDI Port" on Windows; "Xentool Wooting" /
+    // "Xentool Exquis MPE" on Linux/macOS (xentool publishes its own
+    // virtual ALSA seq / CoreMIDI port). The legacy "Midi Through" entry
+    // is kept so old installs that override --output to it still work.
+    // If you run xentool with `--output` set to something else, prepend
+    // your port name here.
+    ~xentoolPortMatches = ["xentool", "loopmidi", "midi through", "midithrough"];
     ~xentoolUid = MIDIClient.sources.detect({ |src|
-        (src.device.toLower.contains(~xentoolPortMatch))
-        or: { src.name.toLower.contains(~xentoolPortMatch) }
+        var dev = src.device.toLower, nam = src.name.toLower;
+        ~xentoolPortMatches.any({ |m| dev.contains(m) or: { nam.contains(m) } })
     }) !? { |src| src.uid };
 
     if(~xentoolUid.isNil) {
         "".postln;
-        "[!] No MIDI source matching '%' found.".format(~xentoolPortMatch).postln;
-        "[!] Start `xentool serve` first and verify loopMIDI Port exists, then re-run this script.".postln;
+        "[!] No MIDI source matching any of % found.".format(~xentoolPortMatches).postln;
+        "[!] Start `xentool serve` first. On Windows, install loopMIDI and create a port named 'loopMIDI Port'.".postln;
+        "[!] On Linux, xentool defaults to 'Midi Through' (always present via snd-seq).".postln;
     } {
         "[ok] xentool input bound: uid=%  device=%".format(
             ~xentoolUid,

@@ -6,6 +6,7 @@ mod geometry;
 mod hud;
 mod layouts;
 mod logging;
+mod midi_out;
 mod mts;
 mod settings;
 mod wooting;
@@ -70,8 +71,10 @@ fn main() -> Result<()> {
                 },
             };
             if is_wtn(&file) {
+                let output = output.unwrap_or_else(|| cli::DEFAULT_OUTPUT_WOOTING.to_string());
                 wooting::commands::cmd_serve_wtn(file, output, hud, hud_port, xenharm_url, osc_port, tune_supercollider, &s.wooting)
             } else {
+                let output = output.unwrap_or_else(|| cli::DEFAULT_OUTPUT_EXQUIS.to_string());
                 cmd_serve(file, pb_range, x_gain, output, mts_esp, hud, hud_port, xenharm_url, osc_port, tune_supercollider, color.to_correction()?)
             }
         }

@@ -452,7 +452,7 @@ pub type RetuneCycleCallback<'a> = &'a mut dyn FnMut(
     u8,
     bool,
     &mut std::collections::HashMap<usize, TuningState>,
-    &mut std::collections::HashMap<usize, midir::MidiOutputConnection>,
+    &mut midir::MidiOutputConnection,
 ) -> Result<()>;
 
 #[allow(clippy::too_many_arguments)]
@@ -462,7 +462,7 @@ pub fn run_serve_retune_ui(
     pb_range: f64,
     x_gain: f64,
     tunings: &mut std::collections::HashMap<usize, TuningState>,
-    outputs: &mut std::collections::HashMap<usize, midir::MidiOutputConnection>,
+    output: &mut midir::MidiOutputConnection,
     display: DisplayHandle,
     hud_ctx: Option<crate::exquis::hud_ctx::HudExquisHandle>,
     hud_url: Option<String>,
@@ -504,17 +504,15 @@ pub fn run_serve_retune_ui(
                         if prev != pressed {
                             prev_control_state.insert(key, pressed);
                             let _ = on_control_edge(
-                                message.device_number, cc, pressed, tunings, outputs,
+                                message.device_number, cc, pressed, tunings, output,
                             );
                         }
                     }
                 }
                 if let Some(tuning) = tunings.get_mut(&message.device_number) {
                     let out_msgs = tuning.process_message(&message.bytes);
-                    if let Some(conn) = outputs.get_mut(&message.device_number) {
-                        for msg in &out_msgs {
-                            let _ = conn.send(msg);
-                        }
+                    for msg in &out_msgs {
+                        let _ = output.send(msg);
                     }
                     if let Some(info) = tuning.last_retune_info.take() {
                         events.push(format!("  retune: {info}"));

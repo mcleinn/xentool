@@ -374,7 +374,7 @@ write_supercollider_unit() {
     esac
     write_unit xentool-supercollider.service <<UNIT
 [Unit]
-Description=SuperCollider synth for xentool ($BACKEND → $sc_patch via $XENTOOL_MIDI_OUTPUT)
+Description=SuperCollider synth for xentool ($BACKEND → $sc_patch via ${XENTOOL_MIDI_OUTPUT:-Xentool ${BACKEND^}} virtual MIDI port)
 After=xentool.service sound.target
 Wants=xentool.service
 
@@ -474,14 +474,25 @@ prompt_layout() {
     fi
 }
 
-prompt_midi_output() {
-    echo
-    echo "MIDI output port (where xentool sends retuned MIDI on Linux):"
-    echo "  - 'Midi Through' is always present (snd-seq virtual port)."
-    echo "  - For SuperCollider you'd typically use 'Midi Through' as well."
-    local def="Midi Through"
-    read -r -p "  Output port [$def]: " XENTOOL_MIDI_OUTPUT
-    XENTOOL_MIDI_OUTPUT="${XENTOOL_MIDI_OUTPUT:-$def}"
+# Verify the ALSA sequencer (snd-seq) is available. xentool's Linux MIDI
+# output uses ALSA seq's virtual-port API to publish a "Xentool Wooting"
+# (or "Xentool Exquis MPE") source that other apps can subscribe to —
+# same pattern as xenwooting's "XenWTN" port. If snd-seq isn't loaded
+# (rare; missing on some headless / containerised systems), we warn and
+# offer the modprobe fix so the user knows what's wrong before xentool
+# fails at runtime.
+check_alsa_seq() {
+    step "Verifying ALSA sequencer (snd-seq) is available"
+    if ! command -v aconnect >/dev/null 2>&1; then
+        warn "  aconnect not found — install 'alsa-utils' (should already be installed via apt step above)."
+        return
+    fi
+    if aconnect -l >/dev/null 2>&1; then
+        echo "  [ok] ALSA seq is available (aconnect -l succeeded)."
+    else
+        warn "  ALSA sequencer not reachable. Try:  sudo modprobe snd-seq"
+        warn "  (xentool needs snd-seq to publish its 'Xentool Wooting' virtual MIDI port.)"
+    fi
 }
 
 print_post_install_help() {
@@ -530,14 +541,17 @@ install_linux_main() {
 
     if [[ "$mgr" == apt ]]; then
         step "Installing apt prerequisites"
-        # build tools + ALSA + USB + curl (needed by rustup) + git (for build)
-        # + tmux (so the xentool service runs in a detachable pty session)
+        # build tools + ALSA dev headers + USB + curl (needed by rustup) +
+        # git (for build) + tmux (so the xentool service runs in a
+        # detachable pty session) + alsa-utils (provides `aconnect`, used
+        # below to verify the ALSA sequencer is available at runtime).
         apt_install_missing \
             build-essential pkg-config curl git tmux \
             libasound2-dev libudev-dev libusb-1.0-0-dev \
-            libssl-dev
+            libssl-dev alsa-utils
     fi
 
+    check_alsa_seq
     ensure_rust
     build_xentool
 
@@ -549,7 +563,11 @@ install_linux_main() {
     setup_supercollider
 
     prompt_layout "$LAYOUT_KIND" "$REPO_ROOT/$LAYOUT_KIND"
-    prompt_midi_output
+    # Note: there's no MIDI-output prompt anymore — xentool creates its own
+    # virtual ALSA seq port at runtime ("Xentool Wooting" / "Xentool Exquis
+    # MPE"), so other apps subscribe to it directly instead of routing
+    # through a shared "Midi Through" port. Override at runtime via the
+    # systemd unit's ExecStart `--output <name>` if needed.
 
     step "Writing systemd user units"
     write_xenharm_unit

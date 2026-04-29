@@ -670,7 +670,8 @@ keyboards via the RGB SDK. One-shot: no polling, no MIDI.
 
 ```powershell
 xentool serve wtn/edo31.wtn
-xentool serve wtn/edo31.wtn --output "loopMIDI Port"
+xentool serve wtn/edo31.wtn --output "loopMIDI Port"      # Windows
+xentool serve wtn/edo31.wtn --output "Xentool Wooting"    # Linux/macOS
 ```
 
 Loads the layout, paints LEDs, registers as an MTS-ESP master, and runs a
@@ -678,6 +679,20 @@ Loads the layout, paints LEDs, registers as an MTS-ESP master, and runs a
 Analog SDK and emits velocity-mapped Note On/Off + continuous poly-pressure
 on a virtual MIDI port. The terminal UI shows currently-held notes,
 controls state, and an event log; press `q` to quit.
+
+**MIDI output port — platform difference:**
+
+- **Windows:** xentool *connects to* an existing virtual cable. Install
+  [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) and
+  create a port named `loopMIDI Port` (the `--output` default). Synths
+  subscribe to `loopMIDI Port` to receive xentool's MIDI.
+- **Linux / macOS:** xentool *creates* its own subscribable MIDI port via
+  ALSA seq / CoreMIDI — same approach as xenwooting's "XenWTN" port. No
+  virtual cable is needed. The default name is `Xentool Wooting`; it
+  shows up directly in MOD Pedalboard, Pianoteq, SuperCollider,
+  qjackctl, etc. Override the name with `--output "<name>"` if needed.
+  The Linux install script verifies that the ALSA sequencer (snd-seq)
+  is available and warns with a `modprobe snd-seq` hint if not.
 
 The hot loop is time-critical (it intentionally avoids any disk I/O); the
 TUI runs on its own thread with snapshots pushed every ~40 ms over a
@@ -723,8 +738,15 @@ directly.
 ### Wooting tuning behavior
 
 Wooting `serve` is **MTS-ESP only** (no pitch-bend retuning mode). The
-synth must be an MTS-ESP client (e.g. Pianoteq). The MTS-ESP master
-broadcasts a global 128-note tuning table built from Board0 + Board1.
+synth must be an MTS-ESP client with multichannel tuning support (e.g.
+Pianoteq). The MTS-ESP master publishes both:
+
+- a global 128-note tuning table (for non-multichannel-aware clients), and
+- a 16×128 multichannel tuning table — one full 128-note table per MIDI
+  channel — required because Lumatone-style channel-stripe layouts
+  assign different absolute pitches to the same MIDI note number on
+  different channels (`virtual_pitch = (chan-1)*edo + note + offset`),
+  so a single global table would collide.
 
 ### Wooting settings
 

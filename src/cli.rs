@@ -3,6 +3,20 @@ use clap::{Args, Command, CommandFactory, Parser, Subcommand, ValueEnum};
 use crate::exquis::midi::DeviceSelection;
 use crate::exquis::proto::{Color, ColorCorrection, NamedZone};
 
+/// Default `--output` MIDI port names, resolved at dispatch time per
+/// backend (see `main.rs`). On Windows we connect to an existing virtual
+/// cable (loopMIDI); on Linux/macOS xentool creates its own subscribable
+/// port via ALSA seq / CoreMIDI, so the default is a backend-specific
+/// name other apps (MOD pedalboard, Pianoteq, SuperCollider) will see.
+#[cfg(unix)]
+pub const DEFAULT_OUTPUT_WOOTING: &str = "Xentool Wooting";
+#[cfg(unix)]
+pub const DEFAULT_OUTPUT_EXQUIS: &str = "Xentool Exquis MPE";
+#[cfg(not(unix))]
+pub const DEFAULT_OUTPUT_WOOTING: &str = "loopMIDI Port";
+#[cfg(not(unix))]
+pub const DEFAULT_OUTPUT_EXQUIS: &str = "loopMIDI Port";
+
 /// Shared color-correction options for commands that send colors to the Exquis.
 #[derive(Debug, Clone, Args)]
 pub struct ColorCorrectionArgs {
@@ -87,9 +101,14 @@ pub enum Commands {
         /// offset is never scaled — only player expression.
         #[arg(long, default_value_t = 15.0)]
         x_gain: f64,
-        /// Output MIDI port name for pitch bend retuning. Default: "loopMIDI Port".
-        #[arg(long, default_value = "loopMIDI Port")]
-        output: String,
+        /// Output MIDI port name. On Windows: existing virtual cable to
+        /// connect to (default "loopMIDI Port"). On Linux/macOS: name of
+        /// the virtual ALSA seq / CoreMIDI port xentool creates (default
+        /// "Xentool Wooting" or "Xentool Exquis MPE", resolved per
+        /// backend at dispatch time). Pass `Option::None` (i.e. don't
+        /// pass `--output`) to use the per-backend default.
+        #[arg(long)]
+        output: Option<String>,
         /// Use MTS-ESP tuning instead of pitch bend retuning.
         #[arg(long)]
         mts_esp: bool,

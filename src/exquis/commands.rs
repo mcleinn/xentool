@@ -662,22 +662,13 @@ pub fn cmd_serve(
         })?;
         drop(master);
     } else {
-        // Default: pitch bend retuning via loopMIDI output port
-        let mut midi_outputs: std::collections::HashMap<usize, midir::MidiOutputConnection> =
-            std::collections::HashMap::new();
-
-        for board in &boards {
-            let out = midir::MidiOutput::new("xentool-serve-output")?;
-            let port = out
-                .ports()
-                .into_iter()
-                .find(|p| out.port_name(p).ok().as_deref() == Some(output.as_str()))
-                .with_context(|| format!("output port `{output}` not found. Install loopMIDI and create a port named \"{output}\"."))?;
-            let conn = out
-                .connect(&port, "xentool-serve")
-                .with_context(|| format!("failed to open output `{output}`"))?;
-            midi_outputs.insert(board.device.number, conn);
-        }
+        // Default: pitch bend retuning via a single output port. On
+        // Windows that's an existing virtual cable (loopMIDI Port); on
+        // Linux/macOS it's a virtual ALSA seq / CoreMIDI port that
+        // xentool publishes itself. See `crate::midi_out`.
+        // All boards share the conn — they write to the same downstream
+        // port either way, and a single conn keeps the structure simple.
+        let mut midi_output = crate::midi_out::open_output("xentool-serve-output", &output)?;
 
         println!("\n{scale_name} | pitch bend retuning → {output} | pb_range={pb_range}");
         let boards_cyc = boards.clone();
@@ -704,11 +695,11 @@ pub fn cmd_serve(
             pb_range,
             x_gain,
             &mut board_tunings,
-            &mut midi_outputs,
+            &mut midi_output,
             display,
             hud_ctx_for_ui.clone(),
             hud_url.clone(),
-            &mut |device_number, cc, pressed, tunings, outputs| {
+            &mut |device_number, cc, pressed, tunings, output| {
                 let Some(board_idx) = boards_cyc
                     .iter()
                     .position(|b| b.device.number == device_number)
@@ -775,11 +766,9 @@ pub fn cmd_serve(
                     _ => return Ok(()),
                 }
                 // --- Settings pressed: cycle to next .xtn ---
-                // Release notes via CC 123 all-notes-off on every output.
-                for conn in outputs.values_mut() {
-                    for ch in 0u8..16 {
-                        let _ = conn.send(&[0xB0 | ch, 123, 0]);
-                    }
+                // Release notes via CC 123 all-notes-off on every channel.
+                for ch in 0u8..16 {
+                    let _ = output.send(&[0xB0 | ch, 123, 0]);
                 }
                 let new_path = match layouts::next(
                     layouts::LayoutKind::Xtn,

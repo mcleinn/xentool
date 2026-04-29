@@ -134,9 +134,10 @@
        virtual MIDI port + SuperCollider + audio out
        ============================================================ -->
   <g filter="url(#shadow)">
-    <rect x="470" y="570" width="260" height="60" rx="10" fill="#e0e0e0" stroke="#666" stroke-width="2"/>
-    <text x="600" y="595" text-anchor="middle" font-size="13" font-weight="600" fill="#1a1a1a">loopMIDI Port</text>
-    <text x="600" y="615" text-anchor="middle" font-size="10" fill="#444">virtual MIDI · system-level routing</text>
+    <rect x="450" y="566" width="300" height="68" rx="10" fill="#e0e0e0" stroke="#666" stroke-width="2"/>
+    <text x="600" y="588" text-anchor="middle" font-size="13" font-weight="600" fill="#1a1a1a">virtual MIDI port</text>
+    <text x="600" y="606" text-anchor="middle" font-size="10" fill="#444">Windows: loopMIDI Port (xentool connects)</text>
+    <text x="600" y="622" text-anchor="middle" font-size="10" fill="#444">Linux / macOS: Xentool Wooting (xentool creates via ALSA seq)</text>
   </g>
 
   <line x1="600" y1="370" x2="600" y2="570" stroke="#333" stroke-width="1.8" marker-end="url(#arrow)"/>
