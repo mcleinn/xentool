@@ -206,23 +206,37 @@ fn used_channels(wtn: &Wtn, board: u8, octave_shift: i16, octave_hold: bool) -> 
     v
 }
 
-fn build_tuning_table(wtn: &Wtn, edo: i32, pitch_offset: i32) -> [f64; 128] {
-    let mut freqs = [0.0f64; 128];
-    for n in 0..128 {
-        freqs[n] = edo_freq_hz(12, n as i32);
+/// Publish the full MTS-ESP tuning state: a global 128-note table (for
+/// non-multichannel-aware clients) plus 16 per-channel 128-note tables.
+///
+/// The per-channel tables are required by Lumatone-style channel-stripe
+/// layouts, where the same MIDI note number carries different absolute
+/// pitches on different channels (`virtual_pitch = ch*edo + note + offset`).
+/// A single global table would collide on those overlaps.
+///
+/// Algorithm ported verbatim from
+/// `C:\Dev-Free\xenwooting\xenwooting\src\bin\xenwooting.rs:1500-1518`.
+fn publish_tuning(master: &MtsMaster, edo: i32, pitch_offset: i32) -> Result<()> {
+    // Global 128-note table — for non-multichannel-aware clients. Treats
+    // every MIDI note as its own EDO step shifted by `pitch_offset`.
+    let mut global = [0.0f64; 128];
+    for note in 0..128u8 {
+        let pitch = note as i32 + pitch_offset;
+        global[note as usize] = edo_freq_hz(edo, pitch);
     }
-    if let Some(cells) = wtn.boards.get(&0) {
-        for c in cells.iter() {
-            if c.chan == 0 {
-                continue;
-            }
-            let virtual_pitch = (c.chan as i32 - 1) * edo + c.key as i32 + pitch_offset + 2 * edo;
-            if (c.key as usize) < 128 {
-                freqs[c.key as usize] = edo_freq_hz(edo, virtual_pitch);
-            }
+    master.set_note_tunings(&global)?;
+
+    // 16 × 128 multichannel tables — each MIDI channel is one EDO octave
+    // higher than the last, mirroring the channel-stripe convention.
+    for ch in 0..16u8 {
+        let mut freqs = [0.0f64; 128];
+        for note in 0..128u8 {
+            let pitch = ch as i32 * edo + note as i32 + pitch_offset;
+            freqs[note as usize] = edo_freq_hz(edo, pitch);
         }
+        master.set_multi_channel_note_tunings(ch, &freqs)?;
     }
-    freqs
+    Ok(())
 }
 
 fn resolve_cell(
@@ -647,11 +661,11 @@ pub fn cmd_serve_wtn(
     let compact_upright = compute_compact_col_offsets(&map, 0);
     let compact_rotated = compute_compact_col_offsets(&map, 180);
 
-    // MTS-ESP master — one global 128-note table from Board0.
+    // MTS-ESP master — global 128-table + 16×128 multichannel tables, so
+    // Lumatone channel-stripe layouts retune correctly on every channel.
     let master = MtsMaster::register().context("registering MTS-ESP master")?;
     master.set_scale_name(&format!("{edo}-EDO"))?;
-    let freqs = build_tuning_table(&wtn, edo, wtn.pitch_offset);
-    master.set_note_tunings(&freqs)?;
+    publish_tuning(&master, edo, wtn.pitch_offset)?;
 
     // MIDI output.
     let mut midi = MidiOut::open(&midi_port)?;
@@ -1063,14 +1077,13 @@ pub fn cmd_serve_wtn(
                                             }
                                             midi.all_notes_off();
 
-                                            // Rebuild MTS table.
+                                            // Rebuild MTS tables (global + 16×128 multichannel).
                                             if let Some(new_edo) = new_wtn.edo {
-                                                let freqs = build_tuning_table(
-                                                    &new_wtn,
+                                                let _ = publish_tuning(
+                                                    &master,
                                                     new_edo,
                                                     new_wtn.pitch_offset,
                                                 );
-                                                let _ = master.set_note_tunings(&freqs);
                                                 let _ = master.set_scale_name(&format!(
                                                     "{new_edo}-EDO"
                                                 ));

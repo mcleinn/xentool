@@ -55,6 +55,19 @@ impl MtsMaster {
                 .context("MTS_RegisterMaster not found in LIBMTS.dll")?;
             register_fn();
             eprintln!("mts: RegisterMaster called");
+
+            // Enable multichannel mode for all 16 channels — mirrors
+            // xenwooting/src/mts.rs. Lumatone-style channel-stripes assign
+            // different absolute pitches to the same MIDI note on different
+            // channels, so a single global table would collide.
+            if let Ok(set_mc) = lib.get::<unsafe extern "C" fn(bool, i8)>(b"MTS_SetMultiChannel\0") {
+                for ch in 0..16i8 {
+                    set_mc(true, ch);
+                }
+                eprintln!("mts: enabled multichannel mode for all 16 channels");
+            } else {
+                eprintln!("mts: MTS_SetMultiChannel not available — falling back to global table only");
+            }
         }
 
         let deregister: unsafe extern "C" fn() = unsafe {
@@ -98,6 +111,21 @@ impl MtsMaster {
                 .get(b"MTS_SetNoteTunings\0")
                 .context("MTS_SetNoteTunings not found")?;
             func(freqs.as_ptr());
+        }
+        Ok(())
+    }
+
+    /// Publish a per-channel 128-note tuning table. Required for Lumatone-style
+    /// channel-stripes where the same MIDI note carries different absolute
+    /// pitches on different channels. Pair with `MTS_SetMultiChannel(true, ch)`
+    /// (called for all 16 channels in `register`).
+    pub fn set_multi_channel_note_tunings(&self, channel: u8, freqs: &[f64; 128]) -> Result<()> {
+        unsafe {
+            let func: Symbol<unsafe extern "C" fn(*const f64, i8)> = self
+                ._lib
+                .get(b"MTS_SetMultiChannelNoteTunings\0")
+                .context("MTS_SetMultiChannelNoteTunings not found")?;
+            func(freqs.as_ptr(), channel as i8);
         }
         Ok(())
     }
