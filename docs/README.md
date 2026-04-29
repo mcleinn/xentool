@@ -48,15 +48,18 @@ microtonality machinery is different per backend:
 
 ## Pitch-bend conventions
 
-- **Exquis**: xentool's `--pb-range` (default 16 semitones) is the
-  synth's pitch-bend interpretation. The MPE tanpura's `~mpeBendRange`
-  must match — a wider range than the conventional ±2 is needed
-  because the bend value carries microtonal retune *plus* the player's
-  X-slide expression.
-- **Wooting**: xentool relays raw 14-bit pitch-bend without scaling.
-  The SC piano patch's `~bendRange` defaults to a pianistic ±2
-  semitones. There is no analogue of the Exquis `--x-gain` multiplier
-  here — Wooting analog keys give full physical bend output already.
+- **Exquis**: xentool's `--pb-range` (default 16 semitones) is what
+  the synth's pitch-bend interpretation must be set to. The MPE
+  tanpura's `~mpeBendRange` matches it. A wider range than the
+  conventional ±2 is needed because the bend value carries microtonal
+  retune *plus* the player's X-slide expression on the same channel.
+- **Wooting**: xentool relays raw 14-bit pitch-bend without scaling,
+  so the synth's pitch-bend range is the user's choice. ±2 for a
+  pianistic feel, ±12 for organ-style portamento, ±16 to match Exquis,
+  …. The bundled SC piano patch defaults to ±2; change `~bendRange` at
+  the top of `midi_piano_xentool.scd` for a different feel. There is
+  no analogue of the Exquis `--x-gain` multiplier here — Wooting
+  analog keys already give full physical bend output.
 
 ## Re-rendering / editing
 

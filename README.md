@@ -63,7 +63,8 @@ foo.wtn` runs the Wooting serve loop. Same for `load` / `new`.
 Pick the script that matches your hardware. Each one is **interactive** —
 it shows the plan up front, prompts before installing system packages, and
 asks separately whether you want the [xenharm sidecar](#optional-xenharm-note-glyphs)
-(microtonal note glyphs) and the bundled SuperCollider tanpura synth.
+(microtonal note glyphs) and the optional [bundled SuperCollider patch](#optional-bundled-supercollider-patches)
+(quick-test synth — replace with any MPE / MTS-ESP synth of your choice).
 
 ```bash
 # Exquis MPE controller:
@@ -319,17 +320,50 @@ absolute pitch to a Unicode SMuFL codepoint:
 If the probe fails, the HUD silently falls back to numeric / letter labels.
 Override the URL with `--xenharm-url`.
 
-#### Optional: SuperCollider synth + OSC parameter strip
+### Synth compatibility
 
-The repo ships two SuperCollider sketches under `supercollider/` —
-pick the one matching your controller:
+xentool is **synth-agnostic** — it produces standard MIDI on a virtual
+MIDI port (loopMIDI on Windows, snd-seq Midi-Through on Linux), and any
+synth that reads from that port can be the audio engine. The two
+backends have different microtonality conventions, which determine
+what kind of synth fits:
 
-- `mpe_tanpura_xentool.scd` — for the **Exquis MPE** flow. Turns the
-  controller into a microtonal tanpura drone with X/Y/Z mapped to
-  string-pluck parameters.
-- `midi_piano_xentool.scd` — for the **Wooting classic-MIDI** flow.
-  A microtonal piano that listens on the channel-striped MIDI that
-  xentool emits for the Wooting backend.
+| Backend  | Target synth                  | Synth pitch-bend range | How microtones reach the synth                                          |
+|----------|-------------------------------|-----------------------:|--------------------------------------------------------------------------|
+| Exquis   | any **MPE-capable** synth     | **±16 semitones** *(must match xentool's `--pb-range`)* | per-note pitch-bend injected before each note-on |
+| Wooting  | any **MTS-ESP master client** | **user's choice** (e.g. ±2 for piano-style bend keys)    | xentool registers as the MTS-ESP master and broadcasts a 128-note global tuning table |
+
+For the **Exquis** flow, point any MPE synth (Pianoteq, Equator2, MPE-aware
+Surge XT, amsynth_multichannel, …) at xentool's MIDI output and set its
+**per-note pitch-bend range to ±16 semitones** to match xentool's
+`--pb-range 16` default. xentool's microtonal retunes ride on the bend
+channel, so the synth-side range must match exactly or the EDO
+quantisation drifts.
+
+For the **Wooting** flow, any MTS-ESP-aware synth (amsynth_multichannel,
+Pianoteq, U-he, …) reads the active tuning from xentool's master via
+the libMTS shared-memory bus — no per-channel bend involved in the
+microtonal pitch path. The bend keys (Left Ctrl / Left Alt) emit raw
+14-bit MIDI pitch-bend that xentool relays without any scaling, so
+**the synth's pitch-bend range is your choice** — set it to ±2 for a
+pianistic feel, ±12 for organ-style portamento, or anything else that
+matches your playing style. The bundled SC piano patch defaults to ±2.
+
+Either flow stays in stock 12-TET if microtones aren't desired — just
+pick a layout (`xtn/edo12.xtn` / `wtn/edo12.wtn`) and the synth produces
+ordinary chromatic MIDI.
+
+#### Optional: bundled SuperCollider patches
+
+For quick testing without configuring an external synth, the repo
+ships two SuperCollider sketches under `supercollider/`. They're meant
+as **optional convenience** — every feature also works with any
+third-party MPE / MTS-ESP synth as described above.
+
+| Patch                          | Backend  | What it is                                        |
+|--------------------------------|----------|---------------------------------------------------|
+| `mpe_tanpura_xentool.scd`      | Exquis   | MPE-aware microtonal tanpura · X/Y/Z → KS pluck params · `~mpeBendRange = 16` |
+| `midi_piano_xentool.scd`       | Wooting  | Classic-MIDI piano · re-derives Hz from `(chan-1)·edo + note` (no MTS-ESP client needed) · `~bendRange = 2` |
 
 Both push parameter changes back to the HUD via OSC — encoder turns
 and button presses appear as a sticky parameter strip plus a brief
@@ -338,15 +372,19 @@ event log on the right edge of the HUD page.
 - **Windows:** `scripts\run-all-{exquis,wooting}.bat` already starts
   the right patch; for a single-window manual launch use
   `scripts\start-supercollider.bat <patch>.scd`.
-- **Linux:** the install scripts wire up `xentool-supercollider.service`
-  with the patch matching the chosen backend.
+- **Linux:** the install scripts (`scripts/install-linux-{exquis,wooting}.sh`)
+  prompt to set up `xentool-supercollider.service` with the matching
+  patch.
 - **Manual / other platforms:** `sclang supercollider/<patch>.scd`
   after xentool is already running.
 
-xentool listens for OSC on UDP port 9000 by default (override with
+##### Pushing your own params from any OSC client
+
+xentool listens for OSC on UDP `9000` by default (override with
 `--osc-port`). Send `/xentool/param/<group>/<name> <value> [<unit>]` for a
-sticky parameter or `/xentool/event <text>` for a one-off log line. From
-SuperCollider:
+sticky parameter or `/xentool/event <text>` for a one-off log line.
+Example from SuperCollider — applies equally to any OSC sender (Max,
+Pd, ChucK, a Python script, …):
 
 ```sclang
 ~hud = NetAddr("127.0.0.1", 9000);
