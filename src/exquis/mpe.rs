@@ -443,10 +443,17 @@ impl Decoder {
     }
 
     fn finish(&self, raw: InputMessage, events: Vec<DisplayEvent>) -> DecodedEvent {
+        // Return ALL currently-active touches across every device, not just
+        // the device whose message triggered this call. The TUI's
+        // active-touches table prefixes each row with `[device]` and the
+        // HUD's chord-name lookup needs the union of pitch classes across
+        // boards. An earlier filter (`touch.device == raw.device_number`)
+        // made `decoded.touches` device-local, which caused the HUD to
+        // alternate between boards' touch sets — chords spread across two
+        // boards never reached the chord-DB as one set.
         let mut touches = self
             .active
             .values()
-            .filter(|touch| touch.device == raw.device_number)
             .map(|touch| TouchSummary {
                 device: touch.device,
                 channel: touch.channel,
@@ -467,6 +474,69 @@ impl Decoder {
             raw,
             events,
             touches,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note_on(device: usize, channel: u8, note: u8, vel: u8) -> InputMessage {
+        InputMessage {
+            _timestamp: 0,
+            device_number: device,
+            port_name: format!("Exquis #{device}"),
+            bytes: vec![0x90 | (channel - 1), note, vel],
+        }
+    }
+
+    fn note_off(device: usize, channel: u8, note: u8) -> InputMessage {
+        InputMessage {
+            _timestamp: 0,
+            device_number: device,
+            port_name: format!("Exquis #{device}"),
+            bytes: vec![0x80 | (channel - 1), note, 0],
+        }
+    }
+
+    /// The bug: pressing notes on two different boards used to alternate in
+    /// `decoded.touches` — each `process()` call only returned touches from
+    /// the device whose message just arrived. The HUD therefore never saw
+    /// both boards' notes in the same snapshot and the chord-DB lookup
+    /// failed for chords spread across boards.
+    #[test]
+    fn touches_returned_across_all_devices() {
+        let mut dec = Decoder::default();
+
+        // Press C on board 0, channel 2.
+        let r = dec.process(note_on(0, 2, 60, 100));
+        assert_eq!(r.touches.len(), 1);
+        assert_eq!(r.touches[0].device, 0);
+        assert_eq!(r.touches[0].note, 60);
+
+        // Press E on board 1, channel 3. Both should be reported.
+        let r = dec.process(note_on(1, 3, 64, 100));
+        assert_eq!(r.touches.len(), 2);
+        let (d0, d1): (Vec<_>, Vec<_>) =
+            r.touches.iter().partition(|t| t.device == 0);
+        assert_eq!(d0.len(), 1);
+        assert_eq!(d1.len(), 1);
+        assert_eq!(d0[0].note, 60);
+        assert_eq!(d1[0].note, 64);
+
+        // Press G on board 0, channel 4 — three concurrent touches across
+        // two devices.
+        let r = dec.process(note_on(0, 4, 67, 100));
+        assert_eq!(r.touches.len(), 3);
+
+        // Release the board-1 note. The board-0 touches must remain
+        // visible — the bug would have made `touches` contain only the
+        // board-1 device's touches (now zero of them).
+        let r = dec.process(note_off(1, 3, 64));
+        assert_eq!(r.touches.len(), 2);
+        for t in &r.touches {
+            assert_eq!(t.device, 0);
         }
     }
 }
