@@ -120,6 +120,43 @@ Or run `scripts\install.bat` for the equivalent. xentool is a CLI on Windows
 xentool serve --hud
 ```
 
+#### One-click full stack (Windows Terminal)
+
+To bring up xentool, the xenharm sidecar and the SuperCollider tanpura
+synth in **one** Windows Terminal window — three labelled tabs in
+xentool / xenharm / supercollider order, started with the right delays
+between them — pick the script for your hardware and double-click:
+
+| Hardware | Script                                | Default layout      |
+|----------|---------------------------------------|---------------------|
+| Exquis   | `scripts\run-all-exquis.bat`          | `xtn\edo31.xtn`     |
+| Wooting  | `scripts\run-all-wooting.bat`         | `wtn\edo31.wtn`     |
+
+Each script:
+
+1. Always opens a **new** Windows Terminal window (your existing wt
+   sessions are untouched).
+2. Locates `wt.exe` via PATH → `%LOCALAPPDATA%\Microsoft\WindowsApps`
+   → `%ProgramFiles%\WindowsApps\Microsoft.WindowsTerminal_*` →
+   PowerShell `Get-Command` (so it works even when the App Execution
+   Alias isn't on `cmd`'s PATH). If wt isn't found anywhere, falls
+   back to three separate `cmd.exe` windows.
+3. Starts xenharm immediately, xentool ~2 s later (so the HUD's
+   `/health` probe sees a bound xenharm), supercollider ~5 s later
+   (so `MIDIClient.init` sees xentool's MIDI port and the OSC strip
+   doesn't fire into a closed UDP socket).
+4. Pins the layout (`xtn\edo31.xtn` or `wtn\edo31.wtn`) so xentool
+   loads the right backend regardless of what `settings.json` last
+   used. Set `LAYOUT` before calling either script to override:
+
+   ```powershell
+   set LAYOUT=C:\Dev-Free\xentool\xtn\edo24.xtn
+   scripts\run-all-exquis.bat
+   ```
+
+To stop a single subsystem, focus its tab and press Ctrl-C (or close
+the tab). To stop everything, close the Windows Terminal window.
+
 ### macOS
 
 `cargo install --path .` builds xentool. The Wooting backend currently has
