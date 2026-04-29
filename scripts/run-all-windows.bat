@@ -8,17 +8,21 @@ REM   1. xentool        (focused; waits 2 s so xenharm has bound)
 REM   2. xenharm        (starts immediately)
 REM   3. supercollider  (waits 5 s so xentool MIDI / loopMIDI are up)
 REM
-REM xentool resumes the last-used layout. To pin a specific layout,
-REM edit the `xentool serve` line below.
+REM Each tab calls one of the small `start-*.bat` / `_run-all-*.bat`
+REM helpers next to this script — that keeps cmd /k arguments single
+REM commands, no nested && / quoting.
+REM
+REM `-w new` always opens a NEW Windows Terminal window so any wt
+REM session you already have running is not touched.
 
 setlocal EnableDelayedExpansion
 set "REPO=%~dp0.."
 
 REM --- locate wt.exe ---
-REM 1) PATH lookup (covers most installs)
-REM 2) the standard App Execution Alias shim in %LocalAppData%
-REM 3) the actual UWP install under %ProgramFiles%\WindowsApps\Microsoft.WindowsTerminal_*
-REM 4) fall back to PowerShell (Get-Command), which sees aliases cmd often misses
+REM 1) PATH lookup (covers most installs).
+REM 2) the standard App Execution Alias shim in %LocalAppData%.
+REM 3) the actual UWP install under %ProgramFiles%\WindowsApps\Microsoft.WindowsTerminal_*.
+REM 4) fall back to PowerShell (Get-Command), which sees aliases cmd often misses.
 set "WT="
 where wt >nul 2>&1 && set "WT=wt"
 
@@ -29,9 +33,6 @@ if not defined WT (
 )
 
 if not defined WT (
-    REM Find the highest-versioned UWP install. Skip silently if the dir
-    REM isn't readable (default ACLs hide WindowsApps for non-admins, but
-    REM individual package dirs are usually still openable).
     for /f "delims=" %%P in ('dir /b /a:d "%ProgramFiles%\WindowsApps\Microsoft.WindowsTerminal_*" 2^>nul') do (
         if exist "%ProgramFiles%\WindowsApps\%%P\wt.exe" (
             set "WT=%ProgramFiles%\WindowsApps\%%P\wt.exe"
@@ -40,7 +41,6 @@ if not defined WT (
 )
 
 if not defined WT (
-    REM PowerShell sees App Execution Aliases that cmd's `where` doesn't.
     for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "(Get-Command wt -ErrorAction SilentlyContinue).Source"`) do (
         if exist "%%P" set "WT=%%P"
     )
@@ -49,11 +49,11 @@ if not defined WT (
 if defined WT (
     echo Using Windows Terminal: !WT!
     REM `;` separates tabs in the wt command — escape as `^;` for cmd.exe.
-    REM `focus-tab -t 0` brings the leftmost tab (xentool) into focus.
-    "!WT!" -w 0 ^
-        new-tab --title "xentool"        -d "%REPO%"                 cmd /k "timeout /t 2 /nobreak >nul && xentool serve --hud" ^
-^;      new-tab --title "xenharm"        -d "%REPO%\xenharm_service" cmd /k "python server.py" ^
-^;      new-tab --title "supercollider"  -d "%REPO%\scripts"         cmd /k "timeout /t 5 /nobreak >nul && start-supercollider.bat" ^
+    REM `-w new` opens a fresh wt window; `focus-tab -t 0` focuses xentool.
+    "!WT!" -w new ^
+        new-tab --title "xentool"        -d "%REPO%"                 cmd /k "%~dp0_run-all-xentool.bat" ^
+^;      new-tab --title "xenharm"        -d "%REPO%\xenharm_service" cmd /k "%~dp0start-xenharm.bat" ^
+^;      new-tab --title "supercollider"  -d "%REPO%\scripts"         cmd /k "%~dp0_run-all-supercollider.bat" ^
 ^;      focus-tab -t 0
     exit /b 0
 )
@@ -64,7 +64,7 @@ echo %%ProgramFiles%%\WindowsApps, or PowerShell Get-Command. Falling back to
 echo three separate cmd windows. Install Windows Terminal from the Microsoft
 echo Store for the nicer single-window-three-tabs layout.
 echo.
-start "xenharm"       cmd /k "cd /d ""%REPO%\xenharm_service"" && python server.py"
-start "xentool"       cmd /k "cd /d ""%REPO%"" && timeout /t 2 /nobreak >nul && xentool serve --hud"
-start "supercollider" cmd /k "cd /d ""%REPO%\scripts"" && timeout /t 5 /nobreak >nul && start-supercollider.bat"
+start "xenharm"       cmd /k "%~dp0start-xenharm.bat"
+start "xentool"       cmd /k "%~dp0_run-all-xentool.bat"
+start "supercollider" cmd /k "%~dp0_run-all-supercollider.bat"
 exit /b 0
