@@ -331,7 +331,7 @@ what kind of synth fits:
 | Backend  | Target synth                  | Synth pitch-bend range | How microtones reach the synth                                          |
 |----------|-------------------------------|-----------------------:|--------------------------------------------------------------------------|
 | Exquis   | any **MPE-capable** synth     | **±16 semitones** *(must match xentool's `--pb-range`)* | per-note pitch-bend injected before each note-on |
-| Wooting  | any **MTS-ESP master client** | **user's choice** (e.g. ±2 for piano-style bend keys)    | xentool registers as the MTS-ESP master and broadcasts a 128-note global tuning table |
+| Wooting  | any **MTS-ESP master client with multichannel tuning support** | **user's choice** (e.g. ±2 for piano-style bend keys) | xentool registers as the MTS-ESP master and pushes a 16×128 multichannel tuning table |
 
 For the **Exquis** flow, point any MPE synth (Pianoteq, Equator2, MPE-aware
 Surge XT, amsynth_multichannel, …) at xentool's MIDI output and set its
@@ -340,14 +340,21 @@ Surge XT, amsynth_multichannel, …) at xentool's MIDI output and set its
 channel, so the synth-side range must match exactly or the EDO
 quantisation drifts.
 
-For the **Wooting** flow, any MTS-ESP-aware synth (amsynth_multichannel,
-Pianoteq, U-he, …) reads the active tuning from xentool's master via
-the libMTS shared-memory bus — no per-channel bend involved in the
-microtonal pitch path. The bend keys (Left Ctrl / Left Alt) emit raw
-14-bit MIDI pitch-bend that xentool relays without any scaling, so
-**the synth's pitch-bend range is your choice** — set it to ±2 for a
-pianistic feel, ±12 for organ-style portamento, or anything else that
-matches your playing style. The bundled SC piano patch defaults to ±2.
+For the **Wooting** flow, point any MTS-ESP master client *with
+multichannel tuning support* (amsynth_multichannel, Pianoteq, …) at
+xentool's MIDI output. xentool registers as the MTS-ESP master and
+publishes a 16×128 multichannel tuning table over the libMTS
+shared-memory bus — one full 128-note table per MIDI channel, because
+the Lumatone-style channel-stripes Wooting emits assign different
+absolute pitches to the same MIDI note number on different channels,
+and a global single-channel table would collide. Synths that only
+support single-channel MTS-ESP will read the wrong frequencies.
+
+The bend keys (Left Ctrl / Left Alt) emit raw 14-bit MIDI pitch-bend
+that xentool relays without any scaling, so **the synth's pitch-bend
+range is your choice** — set it to ±2 for a pianistic feel, ±12 for
+organ-style portamento, or anything else that matches your playing
+style. The bundled SC piano patch defaults to ±2.
 
 Either flow stays in stock 12-TET if microtones aren't desired — just
 pick a layout (`xtn/edo12.xtn` / `wtn/edo12.wtn`) and the synth produces

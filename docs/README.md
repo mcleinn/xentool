@@ -38,13 +38,17 @@ microtonality machinery is different per backend:
   Karplus-Strong string accordingly.
 - **Wooting** keyboards emit classic 12 / N-EDO MIDI on Lumatone-style
   channel-stripes (each channel = one EDO offset). xentool acts as
-  the MTS-ESP master, but SuperCollider has no MTS-ESP client, so
-  xentool *also* broadcasts `/xentool/tuning <edo, pitch_offset, layout_id>`
+  the MTS-ESP master and publishes a **16×128 multichannel** tuning
+  table — one full 128-note table per MIDI channel — because
+  channel-stripe layouts assign different absolute pitches to the
+  same MIDI note number on different channels and a single global
+  table would collide. SuperCollider has no MTS-ESP client at all,
+  so xentool *also* broadcasts `/xentool/tuning <edo, pitch_offset, layout_id>`
   over OSC when started with `--tune-supercollider`. The SC
   `midi_piano` patch listens for that broadcast and re-derives Hz
   from the same EDO formula xentool's master uses
   (`C0 * 2^(virtual_pitch / edo)`), giving frequencies bit-identical
-  to what an MTS-ESP client would receive.
+  to what a multichannel MTS-ESP client would receive.
 
 ## Pitch-bend conventions
 

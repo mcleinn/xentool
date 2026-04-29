@@ -94,7 +94,7 @@
     <rect x="950" y="260" width="220" height="80" rx="10" fill="#d8f0f0" stroke="#4a9090" stroke-width="2"/>
     <text x="1060" y="288" text-anchor="middle" font-size="13" font-weight="600" fill="#1c5050">MTS-ESP master</text>
     <text x="1060" y="308" text-anchor="middle" font-size="10" fill="#2a6868">libMTS shared memory</text>
-    <text x="1060" y="324" text-anchor="middle" font-size="10" fill="#2a6868">128-note global tuning table</text>
+    <text x="1060" y="324" text-anchor="middle" font-size="10" fill="#2a6868">16×128 multichannel tuning table</text>
   </g>
   <line x1="900" y1="305" x2="950" y2="300" stroke="#4a9090" stroke-width="1.5" stroke-dasharray="3 2"/>
   <text x="908" y="294" font-size="9" fill="#2a6868" font-style="italic">writes to</text>
