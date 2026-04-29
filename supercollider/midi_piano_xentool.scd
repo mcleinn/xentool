@@ -1,4 +1,4 @@
-// Piano-style MIDI hello-world.
+// Piano-style MIDI hello-world for xentool's Wooting (classic-MIDI) flow.
 // Connects all MIDI inputs, plays a physical-model piano on noteOn,
 // prints verbose debug for every incoming MIDI message.
 //
@@ -7,6 +7,35 @@
 // pressure when present) so the note keeps speaking with loudness driven
 // by aftertouch. At `press = 0` the sustain layer is silent and the
 // synth sounds identical to the original hammer-pluck patch.
+//
+// Tuning: SuperCollider doesn't ship with an MTS-ESP client (xentool's
+// Wooting backend is the MTS-ESP master, but only `amsynth_multichannel`
+// links libMTSClient out of the box). Instead of routing through MTS-ESP,
+// we re-derive each note's frequency from the same formula xentool uses
+// to fill its MTS table — `freq = C0 * 2^(virtual_pitch / edo)` where
+// `virtual_pitch = (chan-1)*edo + note + pitch_offset`. The Lumatone
+// channel-stripe encoding matches xentool's `build_tuning_table`, so the
+// emitted frequencies are bit-identical to what an MTS-ESP client would
+// receive.
+//
+// Set `~tuningEdo` and `~pitchOffset` below to match the active layout.
+// The defaults match `wtn/edo31.wtn` (the layout that
+// `scripts/run-all-wooting.bat` pins).
+
+// ── Tuning configuration ─────────────────────────────────────────────────
+// Edit these to match the layout xentool is currently serving. Both
+// values are also used by xentool itself when it builds the MTS-ESP
+// table (see `src/wooting/serve.rs::build_tuning_table` and
+// `src/mts.rs::edo_freq_hz`). C0 reference is `16.351597831287414 Hz`,
+// matching xentool's master so frequencies agree to within float
+// precision.
+~tuningEdo   = 31;   // edo31.wtn / edo31.xtn → 31; change to 12, 24, 53, ... as needed
+~pitchOffset = 0;    // matches the .wtn / .xtn `PitchOffset=` header
+~tuningC0    = 16.351597831287414;  // Hz; do not touch unless xentool's reference changes
+
+~edoFreq = { |abs_pitch|
+    ~tuningC0 * (2.pow(abs_pitch / ~tuningEdo))
+};
 
 s.waitForBoot({
 
@@ -61,6 +90,9 @@ s.waitForBoot({
     };
     "===========================".postln;
     "Listening for MIDI. Press Ctrl+C to quit.".postln;
+    "Tuning: %-EDO, pitch_offset=% (edit ~tuningEdo / ~pitchOffset to change)".format(
+        ~tuningEdo, ~pitchOffset
+    ).postln;
     "".postln;
 
     // Voices keyed by `(chan → (num → Synth))`. Wooting emits Lumatone
@@ -82,15 +114,28 @@ s.waitForBoot({
     };
 
     MIDIdef.noteOn(\dbgOn, { |vel, num, chan, src|
+        var virtual_pitch, freq;
+        // Lumatone-style channel-stripe encoding (matches xentool's
+        // `build_tuning_table`): each MIDI channel = a different EDO
+        // offset, so the actual sounding pitch is
+        // `(channel-1)*edo + note + pitch_offset` EDO steps above C0.
+        // sclang gives `chan` zero-indexed (0..15), so the (chan-1)
+        // already maps to plain `chan` here. `~edoFreq` returns the
+        // same Hz value xentool puts into its MTS-ESP table for that
+        // virtual pitch.
+        virtual_pitch = (chan * ~tuningEdo) + num + ~pitchOffset;
+        freq = ~edoFreq.value(virtual_pitch);
         ~log.value("noteOn ", chan,
-            "note=% (%) vel=%".format(num, ~noteName.value(num), vel), src);
+            "note=% (%) vel=% → vp=% freq=%Hz".format(
+                num, ~noteName.value(num), vel, virtual_pitch, freq.round(0.01)
+            ), src);
         if(vel > 0) {
             // Free any earlier voice on the same (chan, num) before
             // replacing it — defends against missing noteOff messages.
             ~notes[chan] = ~notes[chan] ?? ();
             ~notes[chan][num] !? { |old| old.release };
             ~notes[chan][num] = Synth(\piano, [
-                \freq, num.midicps,
+                \freq, freq,
                 \amp,  vel.linexp(1, 127, 0.04, 0.5)
             ]);
         } {
