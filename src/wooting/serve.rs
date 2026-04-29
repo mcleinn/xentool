@@ -576,12 +576,43 @@ fn emit_cc_for_board(
 pub fn cmd_serve_wtn(
     file: PathBuf,
     midi_port: String,
+    hud: bool,
+    hud_port: u16,
+    xenharm_url: String,
+    osc_port: u16,
     settings: &WootingSettings,
 ) -> Result<()> {
     let content = std::fs::read_to_string(&file)
         .with_context(|| format!("reading {}", file.display()))?;
     let mut wtn = parse_wtn(&content)?;
     let mut active_wtn_path: PathBuf = file.clone();
+
+    // HUD publisher: always created so the snapshot site can call into it
+    // unconditionally; the HTTP server only starts when --hud is set, and
+    // we only build the ctx in that case so the hot-loop fast-path skips
+    // the LiveState build entirely otherwise.
+    let hud_publisher = crate::hud::HudPublisher::new(crate::hud::LiveState::empty("wooting"));
+    let hud_url: Option<String> = if hud {
+        let xen = crate::hud::xenharm::XenharmClient::start(&xenharm_url);
+        let osc = if osc_port > 0 {
+            match crate::hud::osc::OscClient::start(osc_port) {
+                Ok((c, port)) => {
+                    eprintln!("xentool HUD: OSC listening on udp://0.0.0.0:{port}");
+                    Some(c)
+                }
+                Err(e) => {
+                    eprintln!("xentool HUD: OSC disabled ({e:#})");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        crate::hud::server::spawn(hud_publisher.clone(), hud_port, xen, osc)?;
+        Some(format!("http://localhost:{hud_port}/"))
+    } else {
+        None
+    };
     let edo = wtn.edo.with_context(|| {
         format!(
             "Edo= not set in {}; add e.g. `Edo=31` before the first [Board] section.",
@@ -656,8 +687,9 @@ pub fn cmd_serve_wtn(
         "xentool serve: polling Wooting(s) at ~1 kHz (Ctrl+C / q to stop)".to_string(),
     );
     let shutdown_ui = shutdown.clone();
+    let hud_url_for_ui = hud_url.clone();
     let ui_handle = thread::spawn(move || {
-        if let Err(e) = run_wooting_serve_ui(snap_rx, log_rx, shutdown_ui) {
+        if let Err(e) = run_wooting_serve_ui(snap_rx, log_rx, shutdown_ui, hud_url_for_ui) {
             eprintln!("xentool serve TUI error: {e}");
         }
     });
@@ -666,6 +698,25 @@ pub fn cmd_serve_wtn(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+
+    // HUD ctx: only when --hud is set; None disables the hot-loop submit
+    // fast path. Mutated on layout cycle (Context Menu key).
+    let hud_ctx: Option<crate::wooting::hud_ctx::HudWootingHandle> = if hud {
+        let layout_id = crate::hud::layout_id_from_path(&active_wtn_path);
+        Some(
+            crate::wooting::hud_ctx::HudWootingCtx {
+                publisher: hud_publisher.clone(),
+                layout_id: layout_id.clone(),
+                layout_name: layout_id,
+                edo,
+                pitch_offset: wtn.pitch_offset,
+                layout_pitches: crate::wooting::hud_ctx::build_layout_pitches(&wtn),
+            }
+            .into_handle(),
+        )
+    } else {
+        None
+    };
 
     let initial_pairs: Vec<(u8, u8)> = device_index_by_id
         .values()
@@ -1012,6 +1063,23 @@ pub fn cmd_serve_wtn(
                                                 active_layout_filename
                                             ));
 
+                                            // Refresh HUD ctx so the next
+                                            // snapshot reflects the new layout.
+                                            if let Some(h) = &hud_ctx {
+                                                let mut ctx = h.borrow_mut();
+                                                ctx.layout_id =
+                                                    crate::hud::layout_id_from_path(&new_path);
+                                                ctx.layout_name = ctx.layout_id.clone();
+                                                if let Some(new_edo) = wtn.edo {
+                                                    ctx.edo = new_edo;
+                                                }
+                                                ctx.pitch_offset = wtn.pitch_offset;
+                                                ctx.layout_pitches =
+                                                    crate::wooting::hud_ctx::build_layout_pitches(
+                                                        &wtn,
+                                                    );
+                                            }
+
                                             // Repaint LEDs.
                                             let pairs: Vec<(u8, u8)> = device_index_by_id
                                                 .values()
@@ -1188,6 +1256,43 @@ pub fn cmd_serve_wtn(
                 now,
             );
             let _ = snap_tx.try_send(snap);
+
+            // HUD: same cadence as the TUI snapshot; submit() is wait-free.
+            if let Some(h) = &hud_ctx {
+                let mut held_iter: Vec<(u8, u8, u8)> = Vec::new();
+                for (device_id, ds) in states.iter() {
+                    let wtn_board = device_index_by_id
+                        .get(device_id)
+                        .copied()
+                        .unwrap_or(0);
+                    for ks in ds.keys.values() {
+                        if let KeyState::Held { out_ch, note, .. } = *ks {
+                            held_iter.push((wtn_board, out_ch, note));
+                        }
+                    }
+                }
+                let boards_present: Vec<u8> = device_index_by_id
+                    .values()
+                    .copied()
+                    .collect();
+                let pressed = crate::wooting::hud_ctx::pressed_from_held(
+                    held_iter.into_iter(),
+                    edo,
+                    wtn.pitch_offset,
+                    &boards_present,
+                );
+                let mode = crate::wooting::hud_ctx::HudWootingMode {
+                    octave_shift: octave_shift.clamp(i8::MIN as i16, i8::MAX as i16) as i8,
+                    press_threshold: manual_press_threshold,
+                    aftertouch: aftertouch_mode.name().to_string(),
+                    aftertouch_speed_max,
+                    velocity_profile: velocity_profiles
+                        [velocity_profile_idx.min(velocity_profiles.len() - 1)]
+                    .name()
+                    .to_string(),
+                };
+                crate::wooting::hud_ctx::submit_state(h, pressed, mode);
+            }
         }
 
         thread::sleep(POLL_INTERVAL);

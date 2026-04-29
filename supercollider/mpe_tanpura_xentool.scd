@@ -1,0 +1,398 @@
+// MPE tanpura — xentool-aware variant.
+//
+// Only listens on the loopMIDI port that `xentool serve` writes to (so the
+// raw Exquis port isn't double-handled), and uses ~mpeBendRange = 16 to
+// match xentool's default --pb-range. With xentool's snapshot byte 9 set to
+// 0x30 (= 48/48 — full Exquis output) and --pb-range 16, full X slide
+// produces ≈±16 semitones (±1600 c) at the synth.
+//
+// Logs are minimal: only noteOn/noteOff are printed, and noteOn includes
+// the per-channel bend value that was active at the moment the note fired
+// (= the tuning offset xentool injected). Y (CC74) and Z (channel pressure)
+// are still wired into the synth but not logged, to keep the console quiet.
+//
+// Synth model is identical to mpe_tanpura_classic.scd:
+//   X = pitch bend (meend — retunes the Karplus-Strong delay line)
+//   Y = CC 74 — brightness (burst LPF + KS damping + tilt EQ)
+//   Z = aftertouch — sustain drone + jawari intensity + amp swell
+//   vel = pluck strength
+//
+// Make sure xentool serve is already running and emitting to loopMIDI Port
+// before running this script — otherwise the source-filter has nothing to
+// match and no notes will be heard.
+
+s.waitForBoot({
+
+    SynthDef(\mpeTanpuraXentool, { |freq=220, gate=1, bend=0, bright=0.5, press=0, vel=0.5, decay=11, dampScale=1, brightScale=1|
+        var bendRatio, freqSm, brightSm, pressSm, brightMul, ksCoef;
+        var burst, string, sig, ampFol, env, sustainEx;
+
+        // Smoothed controls — kill zipper noise on .set
+        bendRatio = (2 ** (bend / 12)).lag(0.025);
+        freqSm    = freq * bendRatio;
+        brightSm  = bright.lag(0.10);
+        pressSm   = press.lag(0.08);
+
+        // dampScale (encoder/button cycle) multiplies the KS loop coefficient
+        // — bigger value = harder/brighter string. brightScale multiplies the
+        // burst-LPF cutoff multiplier — bigger value = larger/brighter body.
+        // Both default to 1.0, so the synth sounds identical to the original
+        // until the user moves something.
+        brightMul = brightSm.linexp(0, 1, 1.25, 20) * brightScale;
+        ksCoef    = (brightSm.linlin(0, 1, 0.59, 0.05) * dampScale).clip(0.001, 0.999);
+
+        // Pluck excitation — same as classic, scaled by velocity, freq follows bend
+        burst = WhiteNoise.ar(1) * EnvGen.kr(Env.perc(0.0001, 0.05)) * vel;
+        burst = LPF.ar(burst, freqSm * brightMul);
+
+        // Karplus-Strong waveguide
+        string = Pluck.ar(burst, Impulse.kr(0), 0.05, freqSm.reciprocal, decay, ksCoef);
+
+        // Z → sustain drone via parallel CombL waveguide
+        sustainEx = WhiteNoise.ar(1) * 0.015 * pressSm;
+        sustainEx = LPF.ar(sustainEx, freqSm * brightMul);
+        string    = string + CombL.ar(sustainEx, 0.05, freqSm.reciprocal, 4);
+
+        // Amplitude-driven jawari
+        ampFol = Amplitude.ar(string, 0.005, 0.15) + (pressSm * 0.5);
+        sig    = (string * (1.0 + ampFol * 6)).tanh;
+        sig    = sig + (string.cubed * ampFol * 1.4);
+        sig    = (sig * 0.7) + (string * 0.3);
+
+        // Slow string-to-string sympathy
+        sig = DelayC.ar(sig, 0.03, SinOsc.kr(0.27, Rand(0, 2pi)).range(0.012, 0.022));
+
+        // Post-synth tilt EQ — audible part of Y.
+        sig = BHiShelf.ar(sig, 1500, 1, brightSm.linlin(0, 1, -24,  24));
+        sig = BLowShelf.ar(sig, 400,  1, brightSm.linlin(0, 1,   8, -8));
+
+        // ASR envelope, long release so KS decay isn't truncated
+        env = EnvGen.kr(
+            Env.asr(0.005, 1, 4.0, curve: \sin),
+            gate,
+            doneAction: 2
+        );
+
+        // Z → wide amp swell
+        sig = sig * env * (0.3 + pressSm * 1.2) * 0.5;
+        sig = Limiter.ar(sig, 0.95);
+
+        Out.ar(0, Pan2.ar(sig, Rand(-0.3, 0.3)));
+    }).add;
+
+    SynthDef(\mpeReverb, { |mix=0.45, room=0.88, damp=0.5|
+        var sig = In.ar(0, 2);
+        sig = FreeVerb2.ar(sig[0], sig[1], mix.lag(0.05), room.lag(0.05), damp);
+        ReplaceOut.ar(0, sig);
+    }).add;
+
+    SynthDef(\mpeMaster, { |amp=1|
+        var sig = In.ar(0, 2);
+        sig = sig * amp.lag(0.05);
+        ReplaceOut.ar(0, sig);
+    }).add;
+
+    s.sync;
+
+    // Reverb is added first so master sits after it in the chain
+    // (voices → reverb → master → output).
+    ~mpeReverbSynth = Synth.tail(s, \mpeReverb);
+    ~mpeMasterSynth = Synth.tail(s, \mpeMaster);
+
+    MIDIClient.init;
+    MIDIIn.connectAll;
+
+    "".postln;
+    "=== MIDI input sources ===".postln;
+    MIDIClient.sources.do { |src, i|
+        "  [%] uid=%  device=\"%\"  port=\"%\"".format(i, src.uid, src.device, src.name).postln;
+    };
+    "===========================".postln;
+
+    // Pick the loopMIDI port that xentool writes to. We match either the
+    // device or port name containing "loopMIDI" (case-insensitive). If the
+    // user runs xentool with --output set to a different port name, change
+    // ~xentoolPortMatch below.
+    ~xentoolPortMatch = "loopmidi";
+    ~xentoolUid = MIDIClient.sources.detect({ |src|
+        (src.device.toLower.contains(~xentoolPortMatch))
+        or: { src.name.toLower.contains(~xentoolPortMatch) }
+    }) !? { |src| src.uid };
+
+    if(~xentoolUid.isNil) {
+        "".postln;
+        "[!] No MIDI source matching '%' found.".format(~xentoolPortMatch).postln;
+        "[!] Start `xentool serve` first and verify loopMIDI Port exists, then re-run this script.".postln;
+    } {
+        "[ok] xentool input bound: uid=%  device=%".format(
+            ~xentoolUid,
+            MIDIClient.sources.detect({ |s| s.uid == ~xentoolUid }).device
+        ).postln;
+    };
+
+    ~mpeVoices       = ();    // chan → Synth currently held on that channel
+    ~mpeBendSemi     = ();    // chan → last bend in semitones (for noteOn log)
+    ~mpeBendLogged   = ();    // chan → last bend value already logged
+    ~mpeBendRange    = 16;    // MUST match xentool's --pb-range (default 16)
+    ~mpeBendLogStep  = nil;   // nil = bend logging disabled (default).
+                              //   Set to 0 to log every event, 0.05 for
+                              //   ≥5-cent moves, etc. Useful for debugging.
+    ~touchMax        = 64;    // Exquis aftertouch caps at ~64/127 in xentool's
+                              //   serve TUI. Map 0..~touchMax → 0..1 so full
+                              //   press reaches the synth's whole Z range.
+                              //   Tune up/down per controller behaviour.
+
+    "".postln;
+    "MPE tanpura (xentool) active. Bend range = ±% semi (matches --pb-range). Y/Z prints disabled. Ctrl+C to quit.".format(~mpeBendRange).postln;
+    "".postln;
+
+    // ── OSC out to xentool's Live HUD ────────────────────────────────────────
+    // The HUD listens on UDP 9000 by default (override with `--osc-port`).
+    // `~hudParam` pushes a sticky parameter row; `~hudEvent` pushes a one-off
+    // event line that fades from the HUD after a few seconds. Both calls are
+    // fire-and-forget UDP so they never block the synth.
+    //
+    // On Windows, sending UDP to a port nothing is listening on triggers an
+    // ICMP "Port Unreachable" reply, which sclang surfaces as
+    // "SC_UdpInPort: received error - An existing connection was forcibly
+    // closed by the remote host" — one error per send. To silence those when
+    // xentool isn't running with `--hud`, set ~hudEnabled = false below
+    // (or just start xentool first and reload this script).
+    ~hudEnabled = true;
+    ~xentoolHud = NetAddr("127.0.0.1", 9000);
+    ~hudParam = { |group, name, value, unit|
+        if(~hudEnabled) {
+            var msg = ["/xentool/param/" ++ group ++ "/" ++ name, value.asFloat];
+            if(unit.notNil and: { unit.size > 0 }) { msg = msg.add(unit) };
+            ~xentoolHud.sendMsg(*msg);
+        };
+    };
+    ~hudEvent = { |text|
+        if(~hudEnabled) {
+            ~xentoolHud.sendMsg("/xentool/event", text);
+        };
+    };
+
+    // ── Performance parameter state ─────────────────────────────────────────
+    // All start at the values that reproduce the current/classic sound, so
+    // the synth behaves identically until you move an encoder or press a
+    // button. Encoders 1-4 = CC 110-113, buttons 1-4 = CC 114-117, all on
+    // MIDI channel 16 (chan index 15).
+    ~kparams = (
+        decay:       11,    // KS string decay (sec)         — Encoder 1
+        reverbMix:   0.45,  // FreeVerb2 mix                  — Encoder 2
+        reverbRoom:  0.88,  // FreeVerb2 room                 — Encoder 3
+        masterAmp:   1.0,   // Output gain                    — Encoder 4
+        dampScale:   1.0,   // KS loop-coef multiplier        — Button 2
+        brightScale: 1.0    // Burst-LPF cutoff multiplier    — Button 3
+    );
+
+    // Cycle preset banks for the buttons. Index starts at the "classic" slot.
+    ~decayPresets = [4, 11, 25];      ~decayPresetIdx  = 1;
+    ~stringPresets = [0.6, 1.0, 1.5]; ~stringPresetIdx = 1;
+    ~bodyPresets   = [0.5, 1.0, 2.0]; ~bodyPresetIdx   = 1;
+
+    // Push the initial defaults so the HUD shows the current state on connect.
+    // (Must run after `~kparams` is defined.)
+    ~hudParam.value("string", "decay",       ~kparams.decay,       "s");
+    ~hudParam.value("reverb", "mix",         ~kparams.reverbMix,   nil);
+    ~hudParam.value("reverb", "room",        ~kparams.reverbRoom,  nil);
+    ~hudParam.value("master", "amp",         ~kparams.masterAmp,   nil);
+    ~hudParam.value("string", "dampScale",   ~kparams.dampScale,   nil);
+    ~hudParam.value("string", "brightScale", ~kparams.brightScale, nil);
+    ~hudEvent.value("synth ready");
+
+    // Encoder 1 — decay (sec). 1 sec per detent.
+    MIDIdef.cc(\xtEnc1, { |val, num, chan, src|
+        if(chan == 15) {
+            var delta = val - 64;
+            ~kparams.decay = (~kparams.decay + delta).clip(0.5, 60);
+            "[enc1/decay]      → % s".format(~kparams.decay.round(0.1)).postln;
+            ~hudParam.value("string", "decay", ~kparams.decay, "s");
+            ~hudEvent.value("encoder 1: decay → %.1f s".format(~kparams.decay));
+        };
+    }, 110, srcID: ~xentoolUid);
+
+    // Encoder 2 — reverb mix (0..1). ~0.05 per detent.
+    MIDIdef.cc(\xtEnc2, { |val, num, chan, src|
+        if(chan == 15) {
+            var delta = val - 64;
+            ~kparams.reverbMix = (~kparams.reverbMix + (delta * 0.05)).clip(0, 1);
+            ~mpeReverbSynth.set(\mix, ~kparams.reverbMix);
+            "[enc2/rev mix]    → %".format(~kparams.reverbMix.round(0.01)).postln;
+            ~hudParam.value("reverb", "mix", ~kparams.reverbMix, nil);
+            ~hudEvent.value("encoder 2: reverb mix → %.2f".format(~kparams.reverbMix));
+        };
+    }, 111, srcID: ~xentoolUid);
+
+    // Encoder 3 — reverb room (0..1). ~0.05 per detent.
+    MIDIdef.cc(\xtEnc3, { |val, num, chan, src|
+        if(chan == 15) {
+            var delta = val - 64;
+            ~kparams.reverbRoom = (~kparams.reverbRoom + (delta * 0.05)).clip(0, 1);
+            ~mpeReverbSynth.set(\room, ~kparams.reverbRoom);
+            "[enc3/rev room]   → %".format(~kparams.reverbRoom.round(0.01)).postln;
+            ~hudParam.value("reverb", "room", ~kparams.reverbRoom, nil);
+            ~hudEvent.value("encoder 3: reverb room → %.2f".format(~kparams.reverbRoom));
+        };
+    }, 112, srcID: ~xentoolUid);
+
+    // Encoder 4 — master amp (0..2). ~0.05 per detent.
+    MIDIdef.cc(\xtEnc4, { |val, num, chan, src|
+        if(chan == 15) {
+            var delta = val - 64;
+            ~kparams.masterAmp = (~kparams.masterAmp + (delta * 0.05)).clip(0, 2);
+            ~mpeMasterSynth.set(\amp, ~kparams.masterAmp);
+            "[enc4/master]     → %".format(~kparams.masterAmp.round(0.01)).postln;
+            ~hudParam.value("master", "amp", ~kparams.masterAmp, nil);
+            ~hudEvent.value("encoder 4: master amp → %.2f".format(~kparams.masterAmp));
+        };
+    }, 113, srcID: ~xentoolUid);
+
+    // Button 1 — cycle decay-time preset (short / medium / long).
+    MIDIdef.cc(\xtBtn1, { |val, num, chan, src|
+        if((chan == 15) and: { val > 0 }) {
+            ~decayPresetIdx = (~decayPresetIdx + 1) % ~decayPresets.size;
+            ~kparams.decay = ~decayPresets[~decayPresetIdx];
+            "[btn1/decay-cyc]  → preset[%/%] = % s".format(
+                ~decayPresetIdx + 1, ~decayPresets.size, ~kparams.decay).postln;
+            ~hudParam.value("string", "decay", ~kparams.decay, "s");
+            ~hudEvent.value("button 1: decay preset → % s".format(~kparams.decay));
+        };
+    }, 114, srcID: ~xentoolUid);
+
+    // Button 2 — cycle string family (KS damping multiplier).
+    //   0.6 = soft/dark gut · 1.0 = classic · 1.5 = hard/steel-bright
+    MIDIdef.cc(\xtBtn2, { |val, num, chan, src|
+        if((chan == 15) and: { val > 0 }) {
+            var labels = ["soft", "classic", "hard"];
+            ~stringPresetIdx = (~stringPresetIdx + 1) % ~stringPresets.size;
+            ~kparams.dampScale = ~stringPresets[~stringPresetIdx];
+            "[btn2/string]     → % (dampScale=%)".format(
+                labels[~stringPresetIdx], ~kparams.dampScale).postln;
+            ~hudParam.value("string", "dampScale", ~kparams.dampScale, nil);
+            ~hudEvent.value("button 2: string family → %".format(labels[~stringPresetIdx]));
+        };
+    }, 115, srcID: ~xentoolUid);
+
+    // Button 3 — cycle body size (burst-LPF cutoff multiplier).
+    //   0.5 = small/dark body · 1.0 = classic · 2.0 = large/bright body
+    MIDIdef.cc(\xtBtn3, { |val, num, chan, src|
+        if((chan == 15) and: { val > 0 }) {
+            var labels = ["small", "classic", "large"];
+            ~bodyPresetIdx = (~bodyPresetIdx + 1) % ~bodyPresets.size;
+            ~kparams.brightScale = ~bodyPresets[~bodyPresetIdx];
+            "[btn3/body]       → % (brightScale=%)".format(
+                labels[~bodyPresetIdx], ~kparams.brightScale).postln;
+            ~hudParam.value("string", "brightScale", ~kparams.brightScale, nil);
+            ~hudEvent.value("button 3: body size → %".format(labels[~bodyPresetIdx]));
+        };
+    }, 116, srcID: ~xentoolUid);
+
+    // Button 4 — reset all performance params to classic defaults.
+    MIDIdef.cc(\xtBtn4, { |val, num, chan, src|
+        if((chan == 15) and: { val > 0 }) {
+            ~kparams.decay       = 11;
+            ~kparams.reverbMix   = 0.45;
+            ~kparams.reverbRoom  = 0.88;
+            ~kparams.masterAmp   = 1.0;
+            ~kparams.dampScale   = 1.0;
+            ~kparams.brightScale = 1.0;
+            ~decayPresetIdx  = 1;
+            ~stringPresetIdx = 1;
+            ~bodyPresetIdx   = 1;
+            ~mpeReverbSynth.set(\mix, ~kparams.reverbMix, \room, ~kparams.reverbRoom);
+            ~mpeMasterSynth.set(\amp, ~kparams.masterAmp);
+            "[btn4/reset]      → all params back to classic defaults".postln;
+            ~hudParam.value("string", "decay",       ~kparams.decay,       "s");
+            ~hudParam.value("reverb", "mix",         ~kparams.reverbMix,   nil);
+            ~hudParam.value("reverb", "room",        ~kparams.reverbRoom,  nil);
+            ~hudParam.value("master", "amp",         ~kparams.masterAmp,   nil);
+            ~hudParam.value("string", "dampScale",   ~kparams.dampScale,   nil);
+            ~hudParam.value("string", "brightScale", ~kparams.brightScale, nil);
+            ~hudEvent.value("button 4: reset to classic defaults");
+        };
+    }, 117, srcID: ~xentoolUid);
+
+    "Encoders/buttons on Exquis settings:".postln;
+    "  Enc1 = decay      Btn1 = decay preset (4/11/25 s)".postln;
+    "  Enc2 = reverb mix Btn2 = string family (soft/classic/hard)".postln;
+    "  Enc3 = reverb room Btn3 = body size (small/classic/large)".postln;
+    "  Enc4 = master amp Btn4 = reset all".postln;
+    "".postln;
+
+    ~deviceFor = { |uid|
+        var d = MIDIClient.sources.detect({ |x| x.uid == uid });
+        if(d.notNil) { "%/%".format(d.device, d.name) } { "uid=" ++ uid }
+    };
+
+    // Source-filter every MIDIdef to the xentool port only. If ~xentoolUid is
+    // nil, srcID:nil makes MIDIdef listen to all sources — but in that state
+    // the user already saw the warning above and can decide to fix or proceed.
+    MIDIdef.noteOn(\xtTanpuraOn, { |vel, num, chan, src|
+        var bendSemi = ~mpeBendSemi[chan] ? 0;
+        if(vel > 0) {
+            ~mpeVoices[chan] !? { |old| old.release };
+            ~mpeVoices[chan] = Synth(\mpeTanpuraXentool, [
+                \freq,        num.midicps,
+                \vel,         vel.linexp(1, 127, 0.2, 1.0),
+                \bend,        bendSemi,
+                \bright,      0.5,
+                \press,       0,
+                \decay,       ~kparams.decay,
+                \dampScale,   ~kparams.dampScale,
+                \brightScale, ~kparams.brightScale
+            ]);
+            "[noteOn]  ch=%  note=% vel=%  bend=% semi (% c)".format(
+                chan+1, num, vel,
+                bendSemi.round(0.001),
+                (bendSemi * 100).round(0.1)
+            ).postln;
+        } {
+            ~mpeVoices[chan] !? { |v| v.release };
+            ~mpeVoices[chan] = nil;
+        };
+    }, srcID: ~xentoolUid);
+
+    MIDIdef.noteOff(\xtTanpuraOff, { |vel, num, chan, src|
+        ~mpeVoices[chan] !? { |v| v.release };
+        ~mpeVoices[chan] = nil;
+        // Reset the last-logged bend so the first bend on a new touch is
+        // guaranteed to print.
+        ~mpeBendLogged[chan] = nil;
+        "[noteOff] ch=%  note=%".format(chan+1, num).postln;
+    }, srcID: ~xentoolUid);
+
+    // Y / CC74: route to synth, no log.
+    MIDIdef.cc(\xtTanpuraCC74, { |val, num, chan, src|
+        ~mpeVoices[chan] !? { |v| v.set(\bright, val / 127) };
+    }, 74, srcID: ~xentoolUid);
+
+    // Z / channel pressure: route to synth, no log.
+    MIDIdef.touch(\xtTanpuraTouch, { |val, chan, src|
+        ~mpeVoices[chan] !? { |v| v.set(\press, (val / ~touchMax).clip(0, 1)) };
+    }, srcID: ~xentoolUid);
+
+    // Pitch bend: track per-channel state so noteOn can log it, update synth,
+    // and emit a throttled debug log (only when bend has moved more than
+    // ~mpeBendLogStep semitones since the last printed value). Set
+    // ~mpeBendLogStep to nil to disable bend logging entirely.
+    MIDIdef.bend(\xtTanpuraBend, { |val, chan, src|
+        var delta = val - 8192;
+        var semi  = (delta / 8192) * ~mpeBendRange;
+        var last  = ~mpeBendLogged[chan];
+        var step  = ~mpeBendLogStep;
+        ~mpeBendSemi[chan] = semi;
+        ~mpeVoices[chan] !? { |v| v.set(\bend, semi) };
+        if(step.notNil and: { last.isNil or: { (semi - last).abs >= step } }) {
+            ~mpeBendLogged[chan] = semi;
+            "[bend]    ch=%  raw=%  Δ=%  → % semi (% c)  voice=%".format(
+                chan+1, val, delta,
+                semi.round(0.001),
+                (semi * 100).round(0.1),
+                if(~mpeVoices[chan].notNil) { "yes" } { "no" }
+            ).postln;
+        };
+    }, srcID: ~xentoolUid);
+
+});

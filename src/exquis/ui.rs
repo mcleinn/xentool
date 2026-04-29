@@ -288,6 +288,8 @@ pub fn run_serve_ui(
     master: &MtsMaster,
     scale_name: &str,
     display: DisplayHandle,
+    hud_ctx: Option<crate::exquis::hud_ctx::HudExquisHandle>,
+    hud_url: Option<String>,
     on_control_edge: &mut dyn FnMut(usize, u8, bool) -> Result<()>,
 ) -> Result<()> {
     enable_raw_mode()?;
@@ -302,6 +304,7 @@ pub fn run_serve_ui(
     let mut events = EventBuffer::default();
     let mut prev_control_state: std::collections::HashMap<(usize, u8), bool> =
         std::collections::HashMap::new();
+    let mut last_hud_submit = std::time::Instant::now();
 
     let result = loop {
         match rx.recv_timeout(Duration::from_millis(40)) {
@@ -328,16 +331,37 @@ pub fn run_serve_ui(
                 for line in decoded.event_lines(false) {
                     events.push(line);
                 }
+
+                // HUD: same submit pattern as the retune UI. The MTS-ESP
+                // path doesn't pre-fill `abs_pitch` on `TouchSummary`, so
+                // `submit_state` derives it from the layout in `hud_ctx`.
+                if let Some(h) = &hud_ctx {
+                    let disp = display.borrow();
+                    crate::exquis::hud_ctx::submit_state(h, &active_touches, &disp);
+                    last_hud_submit = std::time::Instant::now();
+                }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break Ok(()),
         }
 
+        // HUD watchdog (see `run_serve_retune_ui` for rationale).
+        if let Some(h) = &hud_ctx {
+            if last_hud_submit.elapsed() >= Duration::from_millis(250) {
+                let disp = display.borrow();
+                crate::exquis::hud_ctx::submit_state(h, &active_touches, &disp);
+                last_hud_submit = std::time::Instant::now();
+            }
+        }
+
         let clients = master.get_num_clients();
-        let events_title = format!(
+        let mut events_title = format!(
             "Events (q to quit) - MTS-ESP: {} | {} client(s)",
             scale_name, clients
         );
+        if let Some(url) = &hud_url {
+            events_title.push_str(&format!(" | HUD: {url} (h)"));
+        }
 
         terminal.draw(|frame| {
             let vertical = Layout::default()
@@ -404,8 +428,14 @@ pub fn run_serve_ui(
 
         if event::poll(Duration::from_millis(1))? {
             if let CEvent::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    break Ok(());
+                match key.code {
+                    KeyCode::Char('q') => break Ok(()),
+                    KeyCode::Char('h') => {
+                        if let Some(url) = hud_url.as_deref() {
+                            events.push(crate::hud::tui_url::copy_and_open(url));
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -425,6 +455,7 @@ pub type RetuneCycleCallback<'a> = &'a mut dyn FnMut(
     &mut std::collections::HashMap<usize, midir::MidiOutputConnection>,
 ) -> Result<()>;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_serve_retune_ui(
     rx: Receiver<InputMessage>,
     scale_name: &str,
@@ -433,6 +464,8 @@ pub fn run_serve_retune_ui(
     tunings: &mut std::collections::HashMap<usize, TuningState>,
     outputs: &mut std::collections::HashMap<usize, midir::MidiOutputConnection>,
     display: DisplayHandle,
+    hud_ctx: Option<crate::exquis::hud_ctx::HudExquisHandle>,
+    hud_url: Option<String>,
     on_control_edge: RetuneCycleCallback,
 ) -> Result<()> {
     enable_raw_mode()?;
@@ -448,6 +481,11 @@ pub fn run_serve_retune_ui(
     let mut notes_retuned: u64 = 0;
     let mut prev_control_state: std::collections::HashMap<(usize, u8), bool> =
         std::collections::HashMap::new();
+    // Watchdog for the HUD: when no MIDI events arrive for a while, re-submit
+    // the current state so the SSE stream stays fresh and any missed update
+    // (e.g. note_off lost in transit) can't strand a stale "held" frame on
+    // the browser. Cheap when HUD is off (we early-exit on `hud_ctx`).
+    let mut last_hud_submit = std::time::Instant::now();
 
     let result = loop {
         match rx.recv_timeout(Duration::from_millis(40)) {
@@ -504,15 +542,38 @@ pub fn run_serve_retune_ui(
                 for line in decoded.event_lines(false) {
                     events.push(line);
                 }
+
+                // HUD: snapshot the post-tuning state on each event. The
+                // publisher's submit() is wait-free; the JSON encode happens
+                // on the SSE handler thread.
+                if let Some(h) = &hud_ctx {
+                    let disp = display.borrow();
+                    crate::exquis::hud_ctx::submit_state(h, &active_touches, &disp);
+                    last_hud_submit = std::time::Instant::now();
+                }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break Ok(()),
         }
 
-        let events_title = format!(
+        // Watchdog: re-submit ~every 250 ms when HUD is enabled so the SSE
+        // stream stays fresh during long MIDI-idle periods (and so any state
+        // discrepancy gets overwritten by the next tick).
+        if let Some(h) = &hud_ctx {
+            if last_hud_submit.elapsed() >= Duration::from_millis(250) {
+                let disp = display.borrow();
+                crate::exquis::hud_ctx::submit_state(h, &active_touches, &disp);
+                last_hud_submit = std::time::Instant::now();
+            }
+        }
+
+        let mut events_title = format!(
             "Events (q to quit) - {} | pitch bend retuning | pb_range={} x_gain={} | {} notes",
             scale_name, pb_range, x_gain, notes_retuned
         );
+        if let Some(url) = &hud_url {
+            events_title.push_str(&format!(" | HUD: {url} (h)"));
+        }
 
         terminal.draw(|frame| {
             let vertical = Layout::default()
@@ -579,8 +640,14 @@ pub fn run_serve_retune_ui(
 
         if event::poll(Duration::from_millis(1))? {
             if let CEvent::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    break Ok(());
+                match key.code {
+                    KeyCode::Char('q') => break Ok(()),
+                    KeyCode::Char('h') => {
+                        if let Some(url) = hud_url.as_deref() {
+                            events.push(crate::hud::tui_url::copy_and_open(url));
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

@@ -38,12 +38,34 @@ Wooting backend (`src/wooting/`):
 - `commands.rs` — Wooting CLI command handlers (`cmd_serve_wtn`, `cmd_load_wtn`, `cmd_new_wtn`, `list_wootings`).
 - `serve.rs` — 1 kHz hot loop polling the Analog SDK, emitting MIDI + RGB + MTS-ESP. Time-critical: no I/O inside the loop.
 - `ui.rs` — terminal UI for `serve` on Wooting (snapshots pushed every ~40 ms over a bounded crossbeam channel; runs on its own thread so the hot loop is never blocked).
+- `hud_ctx.rs` — Wooting HUD ctx (mutable on layout cycle) and helpers that turn `KeyState::Held` into `LiveState`.
 - `analog.rs`, `rgb.rs` — Wooting Analog and RGB SDK wrappers (libloading at runtime).
 - `wtn.rs` — `.wtn` layout file parser.
 - `hidmap.rs`, `geometry.rs`, `control_bar.rs`, `modes.rs` — HID-to-musical-key mapping, board geometry, control-bar key handling, velocity/aftertouch mode enums.
 
+Live HUD (`src/hud/`):
+- `state.rs` — unified `LiveState` wire shape (layout/mode/pressed/layout_pitches). Both backends submit it.
+- `publisher.rs` — `HudPublisher` wrapping `ArcSwap<LiveState>`. `submit()` is wait-free (single atomic pointer swap, no JSON, no I/O — JSON serialization is deferred to the SSE handler thread).
+- `server.rs` — opt-in HTTP/SSE server (rouille). Serves `/`, `/live.css`, `/live.js`, `/Bravura.otf`, `/api/live/state`, `/api/live/stream`. Decorates the live state with chord names from `chordnam.par`, note glyphs from xenharm, and OSC params/events from external programs.
+- `chordnam.rs` — Rust port of xenwooting's `chords.js`. Parses Manuel Op de Coul's `assets/chordnam.par` (embedded via `include_bytes!`) into per-EDO step-pattern lookups; projects ratio/cents templates into the target EDO with a 15 c rounding cap.
+- `xenharm.rs` — optional client for the bundled `xenharm_service/` Python sidecar. Probes `/health` at startup; resolves note glyphs on a worker thread; cache misses fall back to numeric labels at the frontend. Failure backoff (30 s) + capped one-line status surfaced in the SSE wire shape — no console spam on outage.
+- `osc.rs` — UDP listener (default 9000). Accepts `/xentool/param/<group>/<name> <value> [<unit>]` (sticky params) and `/xentool/event <text>` (~5 s TTL). Used by `supercollider/mpe_tanpura_xentool.scd` to push synth state to the HUD's right-edge strip.
+- `tui_url.rs` — small helper for the `h` shortcut in the TUIs: opens the HUD URL in the browser **and** copies it to the clipboard (`arboard`), pushing a single status line into the events log.
+
 Frontend assets:
 - `assets/editor.{html,css,js}` — frontend for the visual editor (vanilla JS, SVG hex rendering).
+- `assets/live.{html,css,js}` — Live HUD frontend (vanilla JS, port of xenwooting's `LivePage.tsx` — black canvas, auto-fit centered text, four tap-cycle views, Bravura font, OSC parameter strip, xenharm-error footer).
+- `assets/chordnam.par` — Scala chord-name database (~30 KB, 844 chords) embedded into the binary.
+- `assets/Bravura.otf` — SMuFL music font (~512 KB) embedded into the binary so users see microtonal accidentals without a separate install.
+
+External integrations / sidecars:
+- `xenharm_service/` — Python 3.10+ HTTP service (xenharmlib) that maps `(edo, abs_pitch)` to short ASCII + Bravura PUA Unicode. Auto-detected by the HUD; optional.
+- `supercollider/mpe_tanpura_xentool.scd` — SC patch that listens on the loopMIDI/Midi-Through port and renders the MPE input as a microtonal tanpura. Sends OSC parameter updates to xentool's HUD.
+
+Linux install scripts (`scripts/`):
+- `install-linux-common.sh` — sourced by both wrappers; defines `install_linux_main` (apt deps, Rust toolchain, build, optional xenharm venv, optional SuperCollider, systemd user units, tmux-wrapped xentool service).
+- `install-linux-exquis.sh` / `install-linux-wooting.sh` — thin wrappers; the Wooting one additionally installs the Wooting Analog + RGB SDKs (logic inlined from the former `install-wooting-sdks.sh`).
+- The xentool service runs inside `tmux -L xentool` so the TUI lives in a real pty; users attach via `xentool-tui` (a one-line wrapper installed at `~/.local/bin/`).
 
 ## Critical design decision: snapshot-based LED control
 

@@ -7,6 +7,7 @@
 //! cross-device or pure-tooling concerns shared with the Wooting backend.
 
 pub mod commands;
+pub mod hud_ctx;
 pub mod midi;
 pub mod mpe;
 pub mod proto;

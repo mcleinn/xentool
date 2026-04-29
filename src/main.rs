@@ -3,6 +3,7 @@ mod config;
 mod edit;
 mod exquis;
 mod geometry;
+mod hud;
 mod layouts;
 mod logging;
 mod mts;
@@ -46,6 +47,10 @@ fn main() -> Result<()> {
             x_gain,
             output,
             mts_esp,
+            hud,
+            hud_port,
+            xenharm_url,
+            osc_port,
             color,
         } => {
             let s = settings::load();
@@ -64,9 +69,9 @@ fn main() -> Result<()> {
                 },
             };
             if is_wtn(&file) {
-                wooting::commands::cmd_serve_wtn(file, output, &s.wooting)
+                wooting::commands::cmd_serve_wtn(file, output, hud, hud_port, xenharm_url, osc_port, &s.wooting)
             } else {
-                cmd_serve(file, pb_range, x_gain, output, mts_esp, color.to_correction()?)
+                cmd_serve(file, pb_range, x_gain, output, mts_esp, hud, hud_port, xenharm_url, osc_port, color.to_correction()?)
             }
         }
         Commands::New {

@@ -93,6 +93,25 @@ pub enum Commands {
         /// Use MTS-ESP tuning instead of pitch bend retuning.
         #[arg(long)]
         mts_esp: bool,
+        /// Start the Live HUD on a local web server. Off by default.
+        #[arg(long)]
+        hud: bool,
+        /// Port for the Live HUD HTTP server. Default: 9099. Bound to
+        /// `0.0.0.0` so phones / tablets on the LAN can connect.
+        #[arg(long, default_value_t = 9099)]
+        hud_port: u16,
+        /// URL for the optional `xenharm_service` sidecar. The HUD probes
+        /// `<URL>/health` at startup; if it answers, microtonal note glyphs
+        /// (Bravura SMuFL) are fetched from `<URL>/v1/note-names`. Otherwise
+        /// the HUD falls back to numeric labels.
+        #[arg(long, default_value = crate::hud::xenharm::DEFAULT_URL)]
+        xenharm_url: String,
+        /// UDP port for OSC ingestion. The HUD listens for messages like
+        /// `/xentool/param/<group>/<name> <value> [<unit>]` and
+        /// `/xentool/event <text>` and renders them alongside the played
+        /// notes. Pass `0` to disable. Default: 9000.
+        #[arg(long, default_value_t = 9000)]
+        osc_port: u16,
         #[command(flatten)]
         color: ColorCorrectionArgs,
     },

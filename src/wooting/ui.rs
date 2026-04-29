@@ -78,6 +78,7 @@ pub fn run_wooting_serve_ui(
     snap_rx: Receiver<WootingSnapshot>,
     log_rx: Receiver<String>,
     shutdown: Arc<AtomicBool>,
+    hud_url: Option<String>,
 ) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -118,14 +119,27 @@ pub fn run_wooting_serve_ui(
             }
         }
 
-        draw(&mut terminal, &last_snapshot, &log_lines)?;
+        draw(&mut terminal, &last_snapshot, &log_lines, hud_url.as_deref())?;
 
-        // Keyboard: q quits.
+        // Keyboard.
         if event::poll(Duration::from_millis(1))? {
             if let CEvent::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    shutdown.store(true, Ordering::Relaxed);
-                    break Ok(());
+                match key.code {
+                    KeyCode::Char('q') => {
+                        shutdown.store(true, Ordering::Relaxed);
+                        break Ok(());
+                    }
+                    KeyCode::Char('h') => {
+                        if let Some(url) = hud_url.as_deref() {
+                            let line = crate::hud::tui_url::copy_and_open(url);
+                            log_lines.push(line);
+                            if log_lines.len() > LOG_CAP {
+                                let drop_n = log_lines.len() - LOG_CAP;
+                                log_lines.drain(0..drop_n);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -141,6 +155,7 @@ fn draw(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     snap: &WootingSnapshot,
     log_lines: &[String],
+    hud_url: Option<&str>,
 ) -> Result<()> {
     terminal.draw(|frame| {
         let vertical = Layout::default()
@@ -188,10 +203,13 @@ fn draw(
             .cloned()
             .collect::<Vec<_>>()
             .join("\n");
-        let title = format!(
+        let mut title = format!(
             "Events (q to quit) — {}-EDO | MIDI → {} | MTS-ESP",
             snap.edo, snap.midi_port,
         );
+        if let Some(url) = hud_url {
+            title.push_str(&format!(" | HUD: {url} (h)"));
+        }
         let events_widget = Paragraph::new(log_text)
             .block(Block::default().title(title).borders(Borders::ALL));
 

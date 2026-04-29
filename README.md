@@ -36,6 +36,8 @@ foo.wtn` runs the Wooting serve loop. Same for `load` / `new`.
 - `xentool geometries` / `xentool geometry <name>` describe / render hex-grid layouts
 - Multi-board, microtonal tuning via MTS-ESP master
 - Persistent "last layout" memory across runs (`settings.json`)
+- Optional **Live HUD** during `serve` — text-only browser view of currently-played
+  notes / chord names with auto-fit Bravura glyphs (see [Live HUD](#live-hud))
 
 **Exquis-only**
 - `xentool midi` — live MPE monitor (terminal UI showing X/Y/Z + event log)
@@ -56,32 +58,80 @@ foo.wtn` runs the Wooting serve loop. Same for `load` / `new`.
 
 ## Installation
 
+### Linux (Patchbox OS, Raspberry Pi OS, Ubuntu on Pi 4/5)
+
+Pick the script that matches your hardware. Each one is **interactive** —
+it shows the plan up front, prompts before installing system packages, and
+asks separately whether you want the [xenharm sidecar](#optional-xenharm-note-glyphs)
+(microtonal note glyphs) and the bundled SuperCollider tanpura synth.
+
+```bash
+# Exquis MPE controller:
+bash scripts/install-linux-exquis.sh
+
+# Wooting analog keyboard (also installs the Wooting Analog + RGB SDKs):
+bash scripts/install-linux-wooting.sh
+```
+
+Either script will:
+
+1. `apt install` the build prerequisites (build-essential, ALSA + USB dev
+   headers, `tmux` for the TUI service, etc.).
+2. Install Rust via rustup if `cargo` isn't on `PATH` already.
+3. Build and install `xentool` to `~/.cargo/bin/`.
+4. (Wooting only) install the Wooting Analog + RGB SDKs to `/usr/local/lib`.
+5. (Optional, prompted) set up the **xenharm** Python sidecar in a per-user
+   venv (`~/.local/share/xentool/venv`) — required only for Bravura SMuFL
+   note glyphs in the HUD; without it, the HUD falls back to numeric
+   labels.
+6. (Optional, prompted) install **SuperCollider** + `sc3-plugins` and the
+   bundled tanpura synth (`supercollider/mpe_tanpura_xentool.scd`).
+7. Write `systemd --user` units (`xenharm`, `xentool`, optionally
+   `xentool-supercollider`), enable user-linger, and start them in the
+   right order.
+
+After install:
+
+| What you want to do                             | Command                                          |
+|-------------------------------------------------|--------------------------------------------------|
+| Open the **Live HUD**                           | <http://localhost:9099/> (also LAN-reachable)    |
+| Attach to xentool's **TUI** (detach: `Ctrl-b d`)| `xentool-tui` (`~/.local/bin/xentool-tui`)       |
+| Tail logs                                       | `journalctl --user -u xentool -f`                |
+| Manage the service                              | `systemctl --user {status,restart,stop} xentool` |
+
+The xentool serve loop runs under `tmux` (socket label `xentool`) so the
+TUI lives in a real pty even though it's a background service. `xentool-tui`
+is just a one-line wrapper around `tmux -L xentool attach -t xentool`.
+
+### Windows
+
 ```powershell
+# build + install:
 cargo install --path .
+
+# Wooting SDKs (only needed for the Wooting backend):
+powershell -ExecutionPolicy Bypass -File scripts\install-wooting-sdks.ps1
 ```
 
-This installs `xentool.exe` to `~/.cargo/bin/` (in PATH). Re-run after code
-changes to update.
-
-### Wooting SDKs
-
-Only needed for the Wooting backend. Once-per-machine setup:
+Or run `scripts\install.bat` for the equivalent. xentool is a CLI on Windows
+— there are no systemd units; start it from a terminal:
 
 ```powershell
-# Windows
-powershell -ExecutionPolicy Bypass -File scripts\install-wooting-sdks.ps1
-
-# Linux / macOS
-bash scripts/install-wooting-sdks.sh
+xentool serve --hud
 ```
 
-Both scripts download and install the latest Wooting Analog SDK and RGB SDK.
-Run `xentool list` after; connected keyboards should appear.
+### macOS
+
+`cargo install --path .` builds xentool. The Wooting backend currently has
+no install script for macOS; build the SDKs from upstream sources if you
+need them.
 
 ## Build (from source)
 
-```powershell
-cargo build
+```bash
+cargo build           # debug
+cargo build --release # release
+cargo test            # full test suite
 ```
 
 ---
@@ -138,6 +188,77 @@ Import: click Import, pick a `.ltn` (Lumatone), `.wtn` (xenwooting), or
 another `.xtn`. Use arrow keys to translate, `R` to rotate 60° around the
 hovered pad. Enter applies the overlay; Esc cancels. Colors are preserved
 verbatim through the round-trip (no 8-bit ↔ 7-bit lossy scaling during edit).
+
+### Live HUD
+
+```powershell
+xentool serve xtn/edo31.xtn --hud
+xentool serve wtn/edo31.wtn --hud --hud-port 9099
+```
+
+Opt-in via `--hud`. Starts a small HTTP server (default `0.0.0.0:9099` so
+phones / tablets on the LAN can connect) and a browser-based view that shows
+**currently-played notes in text form** with a special musical font (Bravura,
+SMuFL). The page is dark, auto-fits to fill the viewport, and shows tiny
+status corners (layout name, EDO, threshold, aftertouch mode, octave shift).
+Tap (or click) anywhere to cycle four views:
+
+| view        | shows                                                                      |
+|-------------|-----------------------------------------------------------------------------|
+| `notes`     | pressed pitches as Bravura glyphs (xenharm) or letter+octave / `o<oct>p<pc>` |
+| `pcs`       | one entry per pitch class as `<pc>/<oct>` (e.g. `14/3-21/3-3/4`)            |
+| `delta`     | root pitch (with `pc/oct`) + `+N` step offsets to the other notes          |
+| `intervals` | chord-name candidates from the bundled Scala `chordnam.par` (844 chords)    |
+
+Both backends feed the same wire shape; the page renders identically for
+Exquis and Wooting. The hot loops never block on the HUD: snapshots are
+published through a lock-free atomic pointer swap, JSON encoding happens on
+the SSE handler thread.
+
+#### Optional: xenharm note glyphs
+
+For full microtonal note names with Bravura accidentals (up/down arrow
+quartertone glyphs), the bundled `xenharm_service` Python sidecar maps each
+absolute pitch to a Unicode SMuFL codepoint:
+
+- **Linux:** the `install-linux-{exquis,wooting}.sh` scripts offer to
+  install xenharm in a per-user venv and register a `systemd --user`
+  service (`xenharm.service`). Nothing else to do — xentool's HUD probes
+  `http://127.0.0.1:3199/health` at startup and uses it automatically.
+- **Manual / other platforms:**
+
+  ```bash
+  cd xenharm_service
+  python3.12 -m venv .venv && .venv/bin/pip install xenharmlib
+  .venv/bin/python server.py --host 127.0.0.1 --port 3199
+  ```
+
+If the probe fails, the HUD silently falls back to numeric / letter labels.
+Override the URL with `--xenharm-url`.
+
+#### Optional: SuperCollider tanpura synth + OSC parameter strip
+
+The repo ships a SuperCollider sketch that turns the controller into a
+microtonal MPE-aware tanpura drone (see `supercollider/mpe_tanpura_xentool.scd`).
+It also pushes parameter changes back to the HUD via OSC — encoder turns
+and button presses appear as a sticky parameter strip plus a brief event
+log on the right edge of the HUD page.
+
+- **Linux:** the install scripts can install SuperCollider + the bundled
+  patch as `xentool-supercollider.service` (chained `After=xentool.service`).
+- **Manual:** start `sclang supercollider/mpe_tanpura_xentool.scd` after
+  xentool is already running.
+
+xentool listens for OSC on UDP port 9000 by default (override with
+`--osc-port`). Send `/xentool/param/<group>/<name> <value> [<unit>]` for a
+sticky parameter or `/xentool/event <text>` for a one-off log line. From
+SuperCollider:
+
+```sclang
+~hud = NetAddr("127.0.0.1", 9000);
+~hud.sendMsg("/xentool/param/filter/cutoff", 880.0, "Hz");
+~hud.sendMsg("/xentool/event", "preset → bright");
+```
 
 ---
 

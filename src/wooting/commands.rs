@@ -115,8 +115,17 @@ fn paint_board(
 // `xentool serve FILE.wtn` — see `serve` module for the full implementation.
 // ---------------------------------------------------------------------------
 
-pub fn cmd_serve_wtn(file: PathBuf, midi_port: String, settings: &WootingSettings) -> Result<()> {
-    serve::cmd_serve_wtn(file, midi_port, settings)
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_serve_wtn(
+    file: PathBuf,
+    midi_port: String,
+    hud: bool,
+    hud_port: u16,
+    xenharm_url: String,
+    osc_port: u16,
+    settings: &WootingSettings,
+) -> Result<()> {
+    serve::cmd_serve_wtn(file, midi_port, hud, hud_port, xenharm_url, osc_port, settings)
 }
 
 /// Pretty-print connected Wootings for `xentool list`. Silently returns empty

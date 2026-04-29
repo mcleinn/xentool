@@ -23,6 +23,8 @@ use crate::mts;
 use crate::settings;
 use crate::xtn;
 
+use crate::hud::layout_id_from_path;
+
 pub fn cmd_dev(action: DevAction, zones: Vec<NamedZone>) -> Result<()> {
     let devices = list_devices()?;
     if devices.is_empty() {
@@ -281,12 +283,17 @@ fn rebuild_mts_table(
     freqs
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_serve(
     file: std::path::PathBuf,
     pb_range: f64,
     x_gain: f64,
     output: String,
     mts_esp: bool,
+    hud: bool,
+    hud_port: u16,
+    xenharm_url: String,
+    osc_port: u16,
     correction: exquis::proto::ColorCorrection,
 ) -> Result<()> {
     let mut current_layout_path: std::path::PathBuf = file.clone();
@@ -297,6 +304,33 @@ pub fn cmd_serve(
         println!("No Exquis MIDI devices found.");
         return Ok(());
     }
+
+    // HUD publisher: always create one so the UI loop has somewhere to
+    // submit; only spawn the HTTP server (and so build the ctx) when --hud
+    // is set. When off, the UI fast-paths the `Option::None` ctx and skips
+    // the snapshot build entirely.
+    let hud_publisher = crate::hud::HudPublisher::new(crate::hud::LiveState::empty("exquis"));
+    let hud_url: Option<String> = if hud {
+        let xen = crate::hud::xenharm::XenharmClient::start(&xenharm_url);
+        let osc = if osc_port > 0 {
+            match crate::hud::osc::OscClient::start(osc_port) {
+                Ok((c, port)) => {
+                    eprintln!("xentool HUD: OSC listening on udp://0.0.0.0:{port}");
+                    Some(c)
+                }
+                Err(e) => {
+                    eprintln!("xentool HUD: OSC disabled ({e:#})");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        crate::hud::server::spawn(hud_publisher.clone(), hud_port, xen, osc)?;
+        Some(format!("http://localhost:{hud_port}/"))
+    } else {
+        None
+    };
 
     let edo = layout.edo.with_context(|| {
         format!(
@@ -315,6 +349,30 @@ pub fn cmd_serve(
             board.board_name, board.device.number, board.device.label
         );
     }
+
+    // Build the HUD ctx now that boards / layout / edo are known. Stays None
+    // when --hud is off so the UI loop fast-paths.
+    let hud_ctx: Option<exquis::hud_ctx::HudExquisHandle> = if hud {
+        let device_to_board: std::collections::BTreeMap<usize, String> = boards
+            .iter()
+            .map(|b| (b.device.number, b.board_name.clone()))
+            .collect();
+        let layout_id = layout_id_from_path(&current_layout_path);
+        Some(
+            exquis::hud_ctx::HudExquisCtx {
+                publisher: hud_publisher.clone(),
+                layout: layout.clone(),
+                layout_id: layout_id.clone(),
+                layout_name: layout_id,
+                edo,
+                pitch_offset: layout.pitch_offset,
+                device_to_board,
+            }
+            .into_handle(),
+        )
+    } else {
+        None
+    };
 
     if !correction.is_identity() {
         println!(
@@ -374,6 +432,9 @@ pub fn cmd_serve(
     let (tx, rx) = mpsc::channel::<exquis::mpe::InputMessage>();
     let _connections = open_inputs(&devices, tx)?;
 
+    let hud_ctx_for_cb = hud_ctx.clone();
+    let hud_ctx_for_ui = hud_ctx.clone();
+
     if mts_esp {
         // MTS-ESP mode: register as master, Pianoteq listens directly on Exquis
         let mut freqs = [0.0f64; 128];
@@ -416,7 +477,7 @@ pub fn cmd_serve(
         for b in &boards_cyc {
             paint_all_ctrl_buttons_for_board(&b.device, 0);
         }
-        exquis::ui::run_serve_ui(rx, &master, &scale_name, display, &mut |device_number, cc, pressed| {
+        exquis::ui::run_serve_ui(rx, &master, &scale_name, display, hud_ctx_for_ui.clone(), hud_url.clone(), &mut |device_number, cc, pressed| {
             let Some(board_idx) = boards_cyc.iter().position(|b| b.device.number == device_number)
             else {
                 return Ok(());
@@ -514,6 +575,14 @@ pub fn cmd_serve(
                 let mut d = display_for_cb.borrow_mut();
                 d.tuning_name = format!("edo{new_edo}");
                 d.shifts = boards_cyc.iter().map(|b| (b.device.number, 0)).collect();
+            }
+            if let Some(h) = &hud_ctx_for_cb {
+                let mut ctx = h.borrow_mut();
+                ctx.layout = new_layout.clone();
+                ctx.layout_id = layout_id_from_path(&new_path);
+                ctx.layout_name = ctx.layout_id.clone();
+                ctx.edo = new_edo;
+                ctx.pitch_offset = new_layout.pitch_offset;
             }
             let freqs = rebuild_mts_table(
                 &current_layout,
@@ -620,6 +689,8 @@ pub fn cmd_serve(
             &mut board_tunings,
             &mut midi_outputs,
             display,
+            hud_ctx_for_ui.clone(),
+            hud_url.clone(),
             &mut |device_number, cc, pressed, tunings, outputs| {
                 let Some(board_idx) = boards_cyc
                     .iter()
@@ -725,6 +796,14 @@ pub fn cmd_serve(
                     let mut d = display_for_cb.borrow_mut();
                     d.tuning_name = format!("edo{new_edo}");
                     d.shifts = boards_cyc.iter().map(|b| (b.device.number, 0)).collect();
+                }
+                if let Some(h) = &hud_ctx_for_cb {
+                    let mut ctx = h.borrow_mut();
+                    ctx.layout = new_layout.clone();
+                    ctx.layout_id = layout_id_from_path(&new_path);
+                    ctx.layout_name = ctx.layout_id.clone();
+                    ctx.edo = new_edo;
+                    ctx.pitch_offset = new_layout.pitch_offset;
                 }
                 // Rebuild per-board tuning states at shift=0.
                 tunings.clear();

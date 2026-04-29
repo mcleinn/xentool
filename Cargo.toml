@@ -23,5 +23,19 @@ time = { version = "0.3", features = ["formatting", "local-offset", "macros", "p
 # runtime via libloading; no compile-time dependency on a Rust wrapper crate.
 crossbeam-channel = "0.5"
 
+# Live HUD (see src/hud/). Hot loops publish snapshots through a lock-free
+# atomic pointer swap so the audio path never blocks on JSON or I/O.
+arc-swap = "1.7"
+# HTTP client for the optional xenharm sidecar (note-name glyphs). Tiny
+# synchronous client; runs on a background thread so the SSE/HTTP path
+# never blocks waiting on it.
+ureq = { version = "2.10", default-features = false, features = ["json"] }
+# Clipboard support for the HUD-URL fallback modal — used when the TUI
+# can't open a browser (console-only environment).
+arboard = "3.6"
+# OSC ingestion for the HUD — SuperCollider (or any OSC client) can push
+# parameter values that the HUD displays alongside the played notes.
+rosc = "0.10"
+
 [dev-dependencies]
 assert_matches = "1.5"

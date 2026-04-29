@@ -10,7 +10,7 @@
 # into the project root so relative paths like `wtn/foo.wtn` resolve.
 #
 # Requires the Wooting Analog and RGB SDKs to be installed
-# (scripts/install-wooting-sdks.sh).
+# (scripts/install-linux-wooting.sh on Linux, install-wooting-sdks.ps1 on Windows).
 
 set -euo pipefail
 

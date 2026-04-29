@@ -1,0 +1,300 @@
+/* Live HUD — port of xenwooting's LivePage.css. Black canvas, single
+   auto-fit centered Unicode-glyph line, four tiny corner status fields,
+   and an intervals/chord-name area below the main text.
+
+   Bravura.otf is served from xentool itself at /Bravura.otf (embedded via
+   include_bytes!). The font's SMuFL Private Use codepoints (E260-E2DD)
+   render the up/down arrow accidentals that xenharm_service emits. */
+
+@font-face {
+  font-family: 'Bravura';
+  src: url('/Bravura.otf') format('opentype');
+  font-display: swap;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #000;
+  color: #fff;
+  height: 100%;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.liveRoot {
+  position: relative;
+  min-height: 100vh;
+  background: #000;
+  color: #fff;
+  overflow: hidden;
+}
+
+.liveMain {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  box-sizing: border-box;
+}
+
+.liveMainText {
+  /* System font first so ASCII (letters, digits, spaces) renders with normal
+     proportions; Bravura is listed last so the browser only falls back to
+     it for SMuFL PUA codepoints (the up/down-arrow accidentals etc.).
+     Listing Bravura first turns space into a near-zero-width music-spacing
+     glyph, which mangles plain text like chord names. */
+  font-family: ui-sans-serif, system-ui, sans-serif, 'Bravura', 'Bravura Text';
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-align: center;
+  line-height: 1.02;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.liveIntervals {
+  margin-top: 10px;
+  max-width: min(1100px, 94vw);
+  text-align: center;
+  font-size: 18px;
+  line-height: 1.2;
+  color: rgba(255, 255, 255, 0.82);
+  max-height: 28vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 6px 10px;
+}
+
+.liveIntervalsLine {
+  /* System font first so plain text (chord names like "Major Triad",
+     `+10` deltas, the cents `~387c` annotations) renders with normal
+     proportions. Bravura is a music-engraving font whose ASCII glyphs
+     have music-typography metrics — listing it first turns ordinary
+     spaces into near-zero-width and crunches text together. The browser
+     still falls back to Bravura for SMuFL PUA codepoints (the `^`/`v`
+     accidental glyphs xenharm emits). */
+  font-family: ui-sans-serif, system-ui, sans-serif, 'Bravura', 'Bravura Text';
+  white-space: pre-wrap;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.liveChordLine {
+  display: block;
+}
+
+.liveChordPrimary {
+  display: block;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.liveChordSecondary {
+  display: block;
+  color: rgba(255, 255, 255, 0.78);
+  padding-top: 2px;
+}
+
+.liveChordBlock {
+  display: block;
+  text-align: left;
+  padding: 8px 10px;
+  margin: 6px 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.liveChordHeader {
+  display: block;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.liveChordName {
+  display: block;
+  color: rgba(255, 255, 255, 0.72);
+  padding-top: 2px;
+}
+
+.liveMoreBtn {
+  margin-left: 10px;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.livePopover {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(640px, 92vw);
+  max-height: 60vh;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(6px);
+  padding: 12px;
+  z-index: 10;
+}
+
+.livePopoverTitle {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.9);
+  padding-bottom: 8px;
+}
+
+.livePopoverList {
+  max-height: 46vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.livePopoverRow {
+  display: block;
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.85);
+  padding: 4px 0;
+}
+
+.livePopoverHint {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  padding-top: 8px;
+}
+
+.liveCorner {
+  position: absolute;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.6);
+  padding: 12px;
+  user-select: none;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.liveTL {
+  top: 0;
+  left: 0;
+}
+
+.liveTR {
+  top: 0;
+  right: 0;
+  text-align: right;
+}
+
+.liveBL {
+  bottom: 0;
+  left: 0;
+}
+
+.liveBR {
+  bottom: 0;
+  right: 0;
+  text-align: right;
+}
+
+.liveHint {
+  margin-top: 10px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.35);
+  user-select: none;
+}
+
+/* OSC strip — populated by /xentool/param/* and /xentool/event messages
+   from external programs (typically SuperCollider). Sits along the right
+   edge so it doesn't compete with the auto-fit centre line. */
+.oscPanel {
+  position: absolute;
+  top: 36px;
+  right: 12px;
+  bottom: 36px;
+  width: clamp(180px, 22vw, 320px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.oscParams {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.oscParamGroup {
+  margin-top: 6px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.45);
+  text-transform: uppercase;
+}
+
+.oscParamRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.oscParamName {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.oscParamValue {
+  color: rgba(255, 255, 255, 0.92);
+  font-variant-numeric: tabular-nums;
+}
+
+.oscEvents {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  text-align: right;
+}
+
+.oscEventRow {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* One-line status footer (e.g. xenharm errors). Capped to a single line so
+   it can never grow into a wall of text — that's the user's pain point. */
+.liveFooter {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: rgba(255, 130, 130, 0.85);
+  background: rgba(40, 0, 0, 0.55);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 4;
+}

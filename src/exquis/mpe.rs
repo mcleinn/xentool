@@ -188,6 +188,14 @@ struct TouchState {
 }
 
 impl Decoder {
+    /// Drop all currently-tracked active touches. Called from layout-cycle
+    /// paths in `cmd_serve` so the HUD doesn't hold phantom held-note state
+    /// after the host issues an all-notes-off (CC 123) broadcast — the
+    /// Exquis itself won't fire note_offs unless the user lifts their finger.
+    pub fn clear(&mut self) {
+        self.active.clear();
+    }
+
     pub fn process(&mut self, raw: InputMessage) -> DecodedEvent {
         let mut events = Vec::new();
         if raw.bytes.is_empty() {
