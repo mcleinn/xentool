@@ -1,28 +1,47 @@
 // Piano-style MIDI hello-world.
 // Connects all MIDI inputs, plays a physical-model piano on noteOn,
 // prints verbose debug for every incoming MIDI message.
+//
+// Aftertouch behaviour: if the player keeps a key held (no noteOff), a
+// quiet noise→CombL "sustain body" tracks channel pressure (and per-note
+// pressure when present) so the note keeps speaking with loudness driven
+// by aftertouch. At `press = 0` the sustain layer is silent and the
+// synth sounds identical to the original hammer-pluck patch.
 
 s.waitForBoot({
 
-    SynthDef(\piano, { |freq=440, amp=0.3, gate=1|
-        var hammer, strings, sig, env;
+    SynthDef(\piano, { |freq=440, amp=0.3, gate=1, press=0|
+        var hammer, strings, sig, env, pressSm, sustainEx, sustain;
 
-        // Hammer strike: filtered noise burst
+        // ── Hammer strike: filtered noise burst (unchanged) ──────────
         hammer = WhiteNoise.ar(0.5) * EnvGen.kr(Env.perc(0.001, 0.02));
         hammer = HPF.ar(hammer, 100);
 
-        // Three slightly detuned strings (real pianos have multiple per note)
+        // ── Three slightly detuned strings (unchanged) ───────────────
         strings = Mix([
             Pluck.ar(hammer, Impulse.kr(0), 0.05, freq.reciprocal,           8, 0.45),
             Pluck.ar(hammer, Impulse.kr(0), 0.05, (freq * 1.003).reciprocal, 8, 0.45) * 0.6,
             Pluck.ar(hammer, Impulse.kr(0), 0.05, (freq * 0.997).reciprocal, 8, 0.45) * 0.6,
         ]);
 
-        // Velocity → brightness; a hint of soundboard resonance
+        // Velocity → brightness; a hint of soundboard resonance (unchanged)
         sig = LPF.ar(strings, 800 + (amp * 4500));
         sig = sig + (CombC.ar(sig, 0.04, 0.03, 1) * 0.15);
 
-        // Release on noteOff via gate=0
+        // ── Sustain body driven by channel/poly aftertouch ──────────
+        // Quiet noise-excited CombL waveguide tuned to `freq`, scaled by
+        // smoothed aftertouch. At `press = 0` `sustainEx` is exactly
+        // zero, so this branch contributes nothing and the original
+        // hammer-pluck timbre is unchanged. As pressure rises the
+        // sustained body fades in and keeps the note speaking past the
+        // ~8 s natural Pluck decay.
+        pressSm   = press.lag(0.08);
+        sustainEx = WhiteNoise.ar(1) * 0.02 * pressSm;
+        sustainEx = LPF.ar(sustainEx, 800 + (pressSm * 4000));
+        sustain   = CombL.ar(sustainEx, 0.05, freq.reciprocal, 4);
+        sig       = sig + sustain;
+
+        // Release on noteOff via gate=0 (unchanged)
         env = EnvGen.kr(Env.asr(0.001, 1, 0.18, curve: -4), gate, doneAction: 2);
 
         Out.ar(0, Pan2.ar(sig * env * amp * 0.5, 0));
@@ -44,7 +63,11 @@ s.waitForBoot({
     "Listening for MIDI. Press Ctrl+C to quit.".postln;
     "".postln;
 
-    ~notes      = ();
+    // Voices keyed by `(chan → (num → Synth))`. Wooting emits Lumatone
+    // channel-striped MIDI: the same `num` on different channels is a
+    // distinct microtonal pitch, so a flat dict keyed by `num` would
+    // collide voices across channels.
+    ~notes = ();
     ~noteNames  = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
     ~noteName   = { |n| ~noteNames[n % 12] ++ ((n / 12).floor - 1).asInteger };
     ~deviceFor  = { |uid|
@@ -62,20 +85,30 @@ s.waitForBoot({
         ~log.value("noteOn ", chan,
             "note=% (%) vel=%".format(num, ~noteName.value(num), vel), src);
         if(vel > 0) {
-            ~notes[num] = Synth(\piano, [
+            // Free any earlier voice on the same (chan, num) before
+            // replacing it — defends against missing noteOff messages.
+            ~notes[chan] = ~notes[chan] ?? ();
+            ~notes[chan][num] !? { |old| old.release };
+            ~notes[chan][num] = Synth(\piano, [
                 \freq, num.midicps,
                 \amp,  vel.linexp(1, 127, 0.04, 0.5)
             ]);
         } {
             // velocity-zero noteOn == noteOff per MIDI spec
-            if(~notes[num].notNil) { ~notes[num].release; ~notes[num] = nil };
+            ~notes[chan] !? { |dict|
+                dict[num] !? { |s| s.release };
+                dict[num] = nil;
+            };
         };
     });
 
     MIDIdef.noteOff(\dbgOff, { |vel, num, chan, src|
         ~log.value("noteOff", chan,
             "note=% (%) vel=%".format(num, ~noteName.value(num), vel), src);
-        if(~notes[num].notNil) { ~notes[num].release; ~notes[num] = nil };
+        ~notes[chan] !? { |dict|
+            dict[num] !? { |s| s.release };
+            dict[num] = nil;
+        };
     });
 
     MIDIdef.cc(\dbgCC, { |val, num, chan, src|
@@ -90,12 +123,26 @@ s.waitForBoot({
         ~log.value("program", chan, "num=%".format(num), src);
     });
 
+    // Channel pressure → drive the `press` parameter on every voice
+    // currently held on that channel. Loudness of the sustain body
+    // tracks this in real time.
     MIDIdef.touch(\dbgTouch, { |val, chan, src|
+        var press = (val / 127).clip(0, 1);
         ~log.value("aftrtch", chan, "val=%".format(val), src);
+        ~notes[chan] !? { |dict|
+            dict.do { |s| s !? { s.set(\press, press) } };
+        };
     });
 
+    // Per-note polyphonic aftertouch (rare on Wooting; common on MPE
+    // controllers). Same mapping as channel pressure but scoped to a
+    // single (chan, num) voice.
     MIDIdef.polytouch(\dbgPoly, { |val, num, chan, src|
+        var press = (val / 127).clip(0, 1);
         ~log.value("polyAt ", chan, "note=% val=%".format(num, val), src);
+        ~notes[chan] !? { |dict|
+            dict[num] !? { |s| s.set(\press, press) };
+        };
     });
 
 });
