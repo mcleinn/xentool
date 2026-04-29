@@ -1,22 +1,20 @@
 @echo off
-REM Open Windows Terminal with three tabs running xentool, xenharm and
-REM SuperCollider in one window. Falls back to three separate cmd
-REM windows if Windows Terminal can't be located.
+REM Internal helper called from `run-all-exquis.bat` / `run-all-wooting.bat`.
+REM Expects the caller to have set:
 REM
-REM Tab order — leftmost first:
-REM   1. xentool        (focused; waits 2 s so xenharm has bound)
-REM   2. xenharm        (starts immediately)
-REM   3. supercollider  (waits 5 s so xentool MIDI / loopMIDI are up)
+REM   LAYOUT      Absolute path to the .xtn / .wtn layout file (passed to
+REM               xentool serve as the first positional argument).
+REM   BACKEND     Cosmetic label for the wt window/tab title (`exquis` or
+REM               `wooting`).
 REM
-REM Each tab calls one of the small `start-*.bat` / `_run-all-*.bat`
-REM helpers next to this script — that keeps cmd /k arguments single
-REM commands, no nested && / quoting.
-REM
-REM `-w new` always opens a NEW Windows Terminal window so any wt
-REM session you already have running is not touched.
+REM Falls back to three separate cmd windows if Windows Terminal can't be
+REM located. `-w new` always opens a fresh wt window so any existing wt
+REM session is left untouched.
 
 setlocal EnableDelayedExpansion
 set "REPO=%~dp0.."
+if not defined LAYOUT  set "LAYOUT="
+if not defined BACKEND set "BACKEND=xentool"
 
 REM --- locate wt.exe ---
 REM 1) PATH lookup (covers most installs).
@@ -48,12 +46,13 @@ if not defined WT (
 
 if defined WT (
     echo Using Windows Terminal: !WT!
+    echo Layout:                 !LAYOUT!
     REM `;` separates tabs in the wt command — escape as `^;` for cmd.exe.
     REM `-w new` opens a fresh wt window; `focus-tab -t 0` focuses xentool.
     "!WT!" -w new ^
-        new-tab --title "xentool"        -d "%REPO%"                 cmd /k "%~dp0_run-all-xentool.bat" ^
-^;      new-tab --title "xenharm"        -d "%REPO%\xenharm_service" cmd /k "%~dp0start-xenharm.bat" ^
-^;      new-tab --title "supercollider"  -d "%REPO%\scripts"         cmd /k "%~dp0_run-all-supercollider.bat" ^
+        new-tab --title "xentool (!BACKEND!)" -d "%REPO%"                 cmd /k "%~dp0_run-all-xentool.bat" "!LAYOUT!" ^
+^;      new-tab --title "xenharm"             -d "%REPO%\xenharm_service" cmd /k "%~dp0start-xenharm.bat" ^
+^;      new-tab --title "supercollider"       -d "%REPO%\scripts"         cmd /k "%~dp0_run-all-supercollider.bat" ^
 ^;      focus-tab -t 0
     exit /b 0
 )
@@ -65,6 +64,6 @@ echo three separate cmd windows. Install Windows Terminal from the Microsoft
 echo Store for the nicer single-window-three-tabs layout.
 echo.
 start "xenharm"       cmd /k "%~dp0start-xenharm.bat"
-start "xentool"       cmd /k "%~dp0_run-all-xentool.bat"
+start "xentool"       cmd /k "%~dp0_run-all-xentool.bat" "!LAYOUT!"
 start "supercollider" cmd /k "%~dp0_run-all-supercollider.bat"
 exit /b 0
