@@ -164,31 +164,25 @@ impl MidiOut {
 
 // --- Helpers ---
 
-/// Pitch shift (in semitones) at full press of a single bend key. Sized
-/// to feel pianistic — pressing the bend-up / bend-down key fully gives
-/// roughly a whole tone of expression, matching what xenwooting's
-/// players were used to before the synth-side `--pb-range` bump.
-const WOOTING_BEND_SEMI_MAX: f32 = 2.0;
-
-/// Pitch-bend range the downstream synth is configured for. Matches
-/// xentool's Exquis `--pb-range` default (16 semis) so the SC tanpura
-/// and SC piano patches share a single bend-range constant. Combined
-/// with [`WOOTING_BEND_SEMI_MAX`] this scales the raw 14-bit value we
-/// emit so the player's gesture maps to the smaller, pianistic range
-/// even though the synth interprets a wider window.
-const SYNTH_PB_RANGE_SEMI: f32 = 16.0;
-
 /// xenwooting.rs 1068–1075 — combine up/down amounts into a signed 14-bit
-/// bend. Then scale by `WOOTING_BEND_SEMI_MAX / SYNTH_PB_RANGE_SEMI`
-/// (2/16 = 0.125) so a full key press still produces ±2 semis at the
-/// synth instead of ±16.
+/// MIDI pitch-bend value (-8192..8191, center 0).
+///
+/// xentool *does not* scale this. Wooting analog keys give full physical
+/// range out of the box (unlike the Exquis X axis, which caps near 2 %
+/// of LSB and needs `--x-gain` compensation). The pitch shift the user
+/// hears at full press is therefore whatever the downstream synth's
+/// pitch-bend range is set to — for a pianistic ±2 semitones, configure
+/// the synth (or the SC patch's `~bendRange`) accordingly. The default
+/// `~bendRange` in `supercollider/midi_piano_xentool.scd` is 2 for that
+/// reason; the Exquis MPE flow uses 16 because xentool encodes microtonal
+/// retunes into per-note bend values that must be interpreted at the
+/// `--pb-range` xentool was started with.
 fn bend_from_amounts(up_amt: f32, down_amt: f32) -> i32 {
     let x = (up_amt - down_amt).clamp(-1.0, 1.0);
-    let scale = (WOOTING_BEND_SEMI_MAX / SYNTH_PB_RANGE_SEMI) as f64;
     if x >= 0.0 {
-        ((x as f64) * 8191.0 * scale).round().clamp(0.0, 8191.0) as i32
+        (x * 8191.0).round().clamp(0.0, 8191.0) as i32
     } else {
-        ((x as f64) * 8192.0 * scale).round().clamp(-8192.0, 0.0) as i32
+        (x * 8192.0).round().clamp(-8192.0, 0.0) as i32
     }
 }
 
@@ -1418,28 +1412,14 @@ mod tests {
         assert_eq!(bend_from_amounts(0.0, 0.0), 0);
     }
 
-    /// Full bend-up press should produce ~±WOOTING_BEND_SEMI_MAX semis at
-    /// the synth (synth interprets at SYNTH_PB_RANGE_SEMI). With the
-    /// 2/16 scale, raw 14-bit value at full press is round(8191 * 0.125)
-    /// = 1024 (which the synth maps back to +2 semis).
     #[test]
-    fn bend_up_full_press_scales_to_pianistic_range() {
-        let raw = bend_from_amounts(1.0, 0.0);
-        assert_eq!(raw, 1024);
-        // Round-trip: synth at ±16 semis interprets raw / 8192 * 16.
-        let semis = (raw as f32) / 8192.0 * SYNTH_PB_RANGE_SEMI;
-        // ~1.999 (rounding loss); within 0.01 of WOOTING_BEND_SEMI_MAX.
-        assert!((semis - WOOTING_BEND_SEMI_MAX).abs() < 0.01,
-            "expected ~{} semis, got {semis}", WOOTING_BEND_SEMI_MAX);
+    fn bend_up_only_reaches_8191() {
+        assert_eq!(bend_from_amounts(1.0, 0.0), 8191);
     }
 
     #[test]
-    fn bend_down_full_press_scales_to_pianistic_range() {
-        let raw = bend_from_amounts(0.0, 1.0);
-        assert_eq!(raw, -1024);
-        let semis = (raw as f32) / 8192.0 * SYNTH_PB_RANGE_SEMI;
-        assert!((semis + WOOTING_BEND_SEMI_MAX).abs() < 0.01,
-            "expected ~-{} semis, got {semis}", WOOTING_BEND_SEMI_MAX);
+    fn bend_down_only_reaches_minus_8192() {
+        assert_eq!(bend_from_amounts(0.0, 1.0), -8192);
     }
 
     #[test]

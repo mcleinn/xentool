@@ -32,9 +32,12 @@
 ~tuningEdo   = 31;   // edo31.wtn / edo31.xtn → 31; change to 12, 24, 53, ... as needed
 ~pitchOffset = 0;    // matches the .wtn / .xtn `PitchOffset=` header
 ~tuningC0    = 16.351597831287414;  // Hz; do not touch unless xentool's reference changes
-~bendRange   = 16;   // semitones; matches xentool's --pb-range default (Exquis +
-                     // Wooting bend keys both produce raw 14-bit values; this
-                     // constant is the synth-side interpretation)
+~bendRange   = 2;    // semitones; pianistic ±2 semis at full press of a Wooting
+                     // bend key. xentool's Wooting backend emits raw 14-bit
+                     // pitch-bend without retune scaling (unlike the Exquis
+                     // MPE flow, which uses ±16 to encode microtonal retunes
+                     // into per-note bend values). Bump to 16 if you want a
+                     // wider expressive bend window.
 
 ~edoFreq = { |abs_pitch|
     ~tuningC0 * (2.pow(abs_pitch / ~tuningEdo))
