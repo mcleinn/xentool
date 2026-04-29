@@ -112,6 +112,16 @@ pub enum Commands {
         /// notes. Pass `0` to disable. Default: 9000.
         #[arg(long, default_value_t = 9000)]
         osc_port: u16,
+        /// Periodically broadcast the active tuning (`/xentool/tuning <edo>
+        /// <pitch_offset> <layout_id>`) over UDP to a downstream OSC
+        /// listener — typically SuperCollider on `127.0.0.1:57120`. Sent
+        /// once at startup, on every layout cycle, and re-emitted every
+        /// 3 s so a late-starting listener catches up. Off by default;
+        /// the bundled `scripts\run-all-wooting.bat` enables it because
+        /// the Wooting backend uses MTS-ESP and SC has no native MTS-ESP
+        /// client.
+        #[arg(long)]
+        tune_supercollider: bool,
         #[command(flatten)]
         color: ColorCorrectionArgs,
     },

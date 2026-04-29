@@ -17,11 +17,13 @@ use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use rosc::{OscMessage, OscPacket, OscType};
 use serde::Serialize;
+
+use super::HudPublisher;
 
 const RECV_BUFFER_BYTES: usize = 4096;
 /// Newest events first; older events stay until evicted by capacity.
@@ -169,6 +171,77 @@ fn handle_message(msg: OscMessage, inner: &Arc<RwLock<OscState>>) {
         if state.events.len() > EVENT_RING_CAP {
             state.events.truncate(EVENT_RING_CAP);
         }
+    }
+}
+
+// ---------- outbound: tuning broadcast for SuperCollider ----------
+
+/// Default UDP target for the `--tune-supercollider` broadcast: sclang's
+/// canonical OSC port on localhost. Used when the user passes no
+/// override.
+pub const DEFAULT_SC_TUNING_TARGET: &str = "127.0.0.1:57120";
+
+/// Re-emit the tuning state every 3 s so a late-starting SC instance
+/// catches up without needing the user to cycle layouts.
+const TUNING_RESEND_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Spawn a background thread that watches the [`HudPublisher`] for
+/// changes to `(layout.edo, layout.pitch_offset, layout.id)` and emits
+/// `/xentool/tuning <edo:int> <pitch_offset:int> <layout_id:str>` to
+/// `target` over UDP. Sends are fire-and-forget; ICMP "port
+/// unreachable" replies (Windows) are silently ignored.
+///
+/// Used by SuperCollider patches such as
+/// `supercollider/midi_piano_xentool.scd` to track xentool's runtime
+/// tuning cycles without needing an MTS-ESP client.
+pub fn spawn_tuning_broadcaster(publisher: HudPublisher, target: String) -> Result<()> {
+    // Bind to an ephemeral local port. We only ever send.
+    let socket = UdpSocket::bind("0.0.0.0:0")
+        .with_context(|| "binding local UDP socket for tuning broadcast")?;
+    let _ = socket.set_nonblocking(true);
+    eprintln!("xentool: tuning broadcasts → udp://{target}");
+
+    thread::Builder::new()
+        .name("hud-osc-tune".into())
+        .spawn(move || tuning_broadcast_loop(publisher, socket, target))
+        .with_context(|| "spawning tuning broadcast thread")?;
+    Ok(())
+}
+
+fn tuning_broadcast_loop(publisher: HudPublisher, socket: UdpSocket, target: String) {
+    let mut last_sent: Option<(i32, i32, String)> = None;
+    let mut last_sent_at = Instant::now()
+        .checked_sub(TUNING_RESEND_INTERVAL * 2)
+        .unwrap_or_else(Instant::now);
+
+    loop {
+        let snap = publisher.snapshot();
+        let edo = snap.layout.edo as i32;
+        let offset = snap.layout.pitch_offset;
+        let id = snap.layout.id.clone();
+        let cur = (edo, offset, id);
+
+        let changed = last_sent.as_ref() != Some(&cur);
+        let resync_due = last_sent_at.elapsed() >= TUNING_RESEND_INTERVAL;
+
+        // edo == 0 is the publisher's empty initial state — wait for the
+        // serve loop to submit real layout info before the first emit.
+        if edo > 0 && (changed || resync_due) {
+            let msg = OscPacket::Message(OscMessage {
+                addr: "/xentool/tuning".into(),
+                args: vec![
+                    OscType::Int(cur.0),
+                    OscType::Int(cur.1),
+                    OscType::String(cur.2.clone()),
+                ],
+            });
+            if let Ok(buf) = rosc::encoder::encode(&msg) {
+                let _ = socket.send_to(&buf, &target);
+            }
+            last_sent = Some(cur);
+            last_sent_at = Instant::now();
+        }
+        thread::sleep(Duration::from_millis(200));
     }
 }
 

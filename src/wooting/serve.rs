@@ -580,6 +580,7 @@ pub fn cmd_serve_wtn(
     hud_port: u16,
     xenharm_url: String,
     osc_port: u16,
+    tune_supercollider: bool,
     settings: &WootingSettings,
 ) -> Result<()> {
     let content = std::fs::read_to_string(&file)
@@ -613,6 +614,15 @@ pub fn cmd_serve_wtn(
     } else {
         None
     };
+
+    if tune_supercollider {
+        if let Err(e) = crate::hud::osc::spawn_tuning_broadcaster(
+            hud_publisher.clone(),
+            crate::hud::osc::DEFAULT_SC_TUNING_TARGET.into(),
+        ) {
+            eprintln!("xentool: tuning broadcast disabled ({e:#})");
+        }
+    }
     let edo = wtn.edo.with_context(|| {
         format!(
             "Edo= not set in {}; add e.g. `Edo=31` before the first [Board] section.",
@@ -699,9 +709,12 @@ pub fn cmd_serve_wtn(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    // HUD ctx: only when --hud is set; None disables the hot-loop submit
-    // fast path. Mutated on layout cycle (Context Menu key).
-    let hud_ctx: Option<crate::wooting::hud_ctx::HudWootingHandle> = if hud {
+    // HUD ctx: built whenever the publisher needs to see real layout
+    // state — that's `--hud` (HTTP/SSE) or `--tune-supercollider` (the
+    // OSC tuning broadcaster reads layout.edo / pitch_offset from the
+    // same publisher). None disables the hot-loop submit fast path.
+    // Mutated on layout cycle (Context Menu key).
+    let hud_ctx: Option<crate::wooting::hud_ctx::HudWootingHandle> = if hud || tune_supercollider {
         let layout_id = crate::hud::layout_id_from_path(&active_wtn_path);
         Some(
             crate::wooting::hud_ctx::HudWootingCtx {

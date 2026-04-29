@@ -32,6 +32,9 @@
 ~tuningEdo   = 31;   // edo31.wtn / edo31.xtn → 31; change to 12, 24, 53, ... as needed
 ~pitchOffset = 0;    // matches the .wtn / .xtn `PitchOffset=` header
 ~tuningC0    = 16.351597831287414;  // Hz; do not touch unless xentool's reference changes
+~bendRange   = 16;   // semitones; matches xentool's --pb-range default (Exquis +
+                     // Wooting bend keys both produce raw 14-bit values; this
+                     // constant is the synth-side interpretation)
 
 ~edoFreq = { |abs_pitch|
     ~tuningC0 * (2.pow(abs_pitch / ~tuningEdo))
@@ -39,18 +42,29 @@
 
 s.waitForBoot({
 
-    SynthDef(\piano, { |freq=440, amp=0.3, gate=1, press=0|
+    SynthDef(\piano, { |freq=440, amp=0.3, gate=1, press=0, bend=0|
         var hammer, strings, sig, env, pressSm, sustainEx, sustain;
+        var bendRatio, freqSm;
+
+        // ── Per-channel pitch bend ──────────────────────────────────
+        // `bend` is in semitones (set per-voice from xentool's 14-bit
+        // pitch-bend, scaled by `~bendRange`). `lag(0.025)` smooths
+        // .set() jumps so glissando-style bend sweeps don't zip. At
+        // `bend = 0` the ratio is exactly 1 so the synth is unchanged.
+        bendRatio = (2 ** (bend / 12)).lag(0.025);
+        freqSm    = freq * bendRatio;
 
         // ── Hammer strike: filtered noise burst (unchanged) ──────────
         hammer = WhiteNoise.ar(0.5) * EnvGen.kr(Env.perc(0.001, 0.02));
         hammer = HPF.ar(hammer, 100);
 
-        // ── Three slightly detuned strings (unchanged) ───────────────
+        // ── Three slightly detuned strings ──────────────────────────
+        // Use `freqSm` so all three strings retune together when bend
+        // arrives. The detune ratios (×1.003 / ×0.997) are unchanged.
         strings = Mix([
-            Pluck.ar(hammer, Impulse.kr(0), 0.05, freq.reciprocal,           8, 0.45),
-            Pluck.ar(hammer, Impulse.kr(0), 0.05, (freq * 1.003).reciprocal, 8, 0.45) * 0.6,
-            Pluck.ar(hammer, Impulse.kr(0), 0.05, (freq * 0.997).reciprocal, 8, 0.45) * 0.6,
+            Pluck.ar(hammer, Impulse.kr(0), 0.05, freqSm.reciprocal,           8, 0.45),
+            Pluck.ar(hammer, Impulse.kr(0), 0.05, (freqSm * 1.003).reciprocal, 8, 0.45) * 0.6,
+            Pluck.ar(hammer, Impulse.kr(0), 0.05, (freqSm * 0.997).reciprocal, 8, 0.45) * 0.6,
         ]);
 
         // Velocity → brightness; a hint of soundboard resonance (unchanged)
@@ -58,8 +72,8 @@ s.waitForBoot({
         sig = sig + (CombC.ar(sig, 0.04, 0.03, 1) * 0.15);
 
         // ── Sustain body driven by channel/poly aftertouch ──────────
-        // Quiet noise-excited CombL waveguide tuned to `freq`, scaled by
-        // smoothed aftertouch. At `press = 0` `sustainEx` is exactly
+        // Quiet noise-excited CombL waveguide tuned to `freqSm`, scaled
+        // by smoothed aftertouch. At `press = 0` `sustainEx` is exactly
         // zero, so this branch contributes nothing and the original
         // hammer-pluck timbre is unchanged. As pressure rises the
         // sustained body fades in and keeps the note speaking past the
@@ -67,7 +81,7 @@ s.waitForBoot({
         pressSm   = press.lag(0.08);
         sustainEx = WhiteNoise.ar(1) * 0.02 * pressSm;
         sustainEx = LPF.ar(sustainEx, 800 + (pressSm * 4000));
-        sustain   = CombL.ar(sustainEx, 0.05, freq.reciprocal, 4);
+        sustain   = CombL.ar(sustainEx, 0.05, freqSm.reciprocal, 4);
         sig       = sig + sustain;
 
         // Release on noteOff via gate=0 (unchanged)
@@ -95,11 +109,37 @@ s.waitForBoot({
     ).postln;
     "".postln;
 
+    // ── Live tuning updates from xentool ─────────────────────────────
+    // When xentool serve runs with `--tune-supercollider` it broadcasts
+    //   /xentool/tuning <edo:int> <pitch_offset:int> <layout_id:str>
+    // to udp://127.0.0.1:57120 (sclang's default OSC port) at startup,
+    // on every layout cycle, and every 3 s as a resync. We track those
+    // here so a layout swap in xentool reaches the synth without needing
+    // to restart sclang.
+    OSCdef(\xentoolTuning, { |msg|
+        var edo = msg[1], offset = msg[2], layoutId = (msg[3] ? "");
+        if(edo.notNil and: { edo.asInteger > 0 }) {
+            ~tuningEdo = edo.asInteger;
+        };
+        if(offset.notNil) {
+            ~pitchOffset = offset.asInteger;
+        };
+        "Tuning updated from xentool: %-EDO, pitch_offset=%, layout=%".format(
+            ~tuningEdo, ~pitchOffset, layoutId
+        ).postln;
+    }, '/xentool/tuning');
+
     // Voices keyed by `(chan → (num → Synth))`. Wooting emits Lumatone
     // channel-striped MIDI: the same `num` on different channels is a
     // distinct microtonal pitch, so a flat dict keyed by `num` would
     // collide voices across channels.
     ~notes = ();
+    // Latest pitch-bend value per channel, in semitones. xentool's
+    // Wooting backend broadcasts pitch bend to *all* channel-stripes
+    // currently in use on a board (see
+    // `src/wooting/serve.rs::emit_pitchbend_for_board`), so each new
+    // note starts with the channel's current bend already applied.
+    ~chanBendSemi = ();
     ~noteNames  = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
     ~noteName   = { |n| ~noteNames[n % 12] ++ ((n / 12).floor - 1).asInteger };
     ~deviceFor  = { |uid|
@@ -114,7 +154,7 @@ s.waitForBoot({
     };
 
     MIDIdef.noteOn(\dbgOn, { |vel, num, chan, src|
-        var virtual_pitch, freq;
+        var virtual_pitch, freq, bendSemi;
         // Lumatone-style channel-stripe encoding (matches xentool's
         // `build_tuning_table`): each MIDI channel = a different EDO
         // offset, so the actual sounding pitch is
@@ -125,9 +165,11 @@ s.waitForBoot({
         // virtual pitch.
         virtual_pitch = (chan * ~tuningEdo) + num + ~pitchOffset;
         freq = ~edoFreq.value(virtual_pitch);
+        bendSemi = ~chanBendSemi[chan] ? 0;
         ~log.value("noteOn ", chan,
-            "note=% (%) vel=% → vp=% freq=%Hz".format(
-                num, ~noteName.value(num), vel, virtual_pitch, freq.round(0.01)
+            "note=% (%) vel=% → vp=% freq=%Hz bend=%s".format(
+                num, ~noteName.value(num), vel, virtual_pitch,
+                freq.round(0.01), bendSemi.round(0.001)
             ), src);
         if(vel > 0) {
             // Free any earlier voice on the same (chan, num) before
@@ -136,7 +178,8 @@ s.waitForBoot({
             ~notes[chan][num] !? { |old| old.release };
             ~notes[chan][num] = Synth(\piano, [
                 \freq, freq,
-                \amp,  vel.linexp(1, 127, 0.04, 0.5)
+                \amp,  vel.linexp(1, 127, 0.04, 0.5),
+                \bend, bendSemi
             ]);
         } {
             // velocity-zero noteOn == noteOff per MIDI spec
@@ -160,8 +203,23 @@ s.waitForBoot({
         ~log.value("cc     ", chan, "num=% val=%".format(num, val), src);
     });
 
+    // Per-channel pitch bend (0xE0). xentool's Wooting backend broadcasts
+    // bend to every channel currently used by a board (so a single bend
+    // gesture retunes the whole stripe in lockstep). `val` is the raw
+    // 14-bit bend (0..16383, center 8192); we map to semitones via
+    // `~bendRange` (16 semis to match xentool's `--pb-range` default for
+    // Exquis). The smoothed `bend` parameter on the SynthDef avoids
+    // zipper noise when bend ramps quickly.
     MIDIdef.bend(\dbgBend, { |val, chan, src|
-        ~log.value("bend   ", chan, "val=%".format(val), src);
+        var semi = (val - 8192) / 8192 * ~bendRange;
+        ~chanBendSemi[chan] = semi;
+        ~log.value("bend   ", chan,
+            "val=% → % semi (range=±%)".format(
+                val, semi.round(0.001), ~bendRange
+            ), src);
+        ~notes[chan] !? { |dict|
+            dict.do { |s| s !? { s.set(\bend, semi) } };
+        };
     });
 
     MIDIdef.program(\dbgProg, { |num, chan, src|

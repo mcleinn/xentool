@@ -13,6 +13,12 @@ REM are untouched.
 
 setlocal
 set "BACKEND=wooting"
-if not defined LAYOUT    set "LAYOUT=%~dp0..\wtn\edo31.wtn"
-if not defined SC_SCRIPT set "SC_SCRIPT=midi_piano_xentool.scd"
+if not defined LAYOUT             set "LAYOUT=%~dp0..\wtn\edo31.wtn"
+if not defined SC_SCRIPT          set "SC_SCRIPT=midi_piano_xentool.scd"
+REM SC has no MTS-ESP client; xentool needs to push the active EDO and
+REM pitch_offset over OSC so the SC patch can re-derive frequencies on
+REM layout cycle. The Exquis flow doesn't need this — the Exquis backend
+REM uses MPE pitch-bend retuning, so SC's `num.midicps` + the bend gives
+REM the correct microtonal pitch.
+if not defined XENTOOL_EXTRA_ARGS set "XENTOOL_EXTRA_ARGS=--tune-supercollider"
 call "%~dp0_run-all-common.bat"

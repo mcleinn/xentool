@@ -294,6 +294,7 @@ pub fn cmd_serve(
     hud_port: u16,
     xenharm_url: String,
     osc_port: u16,
+    tune_supercollider: bool,
     correction: exquis::proto::ColorCorrection,
 ) -> Result<()> {
     let mut current_layout_path: std::path::PathBuf = file.clone();
@@ -332,6 +333,19 @@ pub fn cmd_serve(
         None
     };
 
+    // Optional tuning broadcast for SuperCollider (no MTS-ESP client). The
+    // broadcaster reads from the same publisher that drives the HUD; if
+    // --hud is off we still need the publisher to be fed, so the hud_ctx
+    // is built whenever either flag is on (handled below).
+    if tune_supercollider {
+        if let Err(e) = crate::hud::osc::spawn_tuning_broadcaster(
+            hud_publisher.clone(),
+            crate::hud::osc::DEFAULT_SC_TUNING_TARGET.into(),
+        ) {
+            eprintln!("xentool: tuning broadcast disabled ({e:#})");
+        }
+    }
+
     let edo = layout.edo.with_context(|| {
         format!(
             "Edo= not set in {}. Add e.g. 'Edo=31' before the first [Board] section.",
@@ -350,9 +364,12 @@ pub fn cmd_serve(
         );
     }
 
-    // Build the HUD ctx now that boards / layout / edo are known. Stays None
-    // when --hud is off so the UI loop fast-paths.
-    let hud_ctx: Option<exquis::hud_ctx::HudExquisHandle> = if hud {
+    // Build the HUD ctx now that boards / layout / edo are known. Built
+    // whenever the publisher needs to see real layout state — that's
+    // either the HUD HTTP server (`--hud`) or the SC tuning broadcaster
+    // (`--tune-supercollider`). Stays None otherwise so the UI loop
+    // fast-paths the empty-ctx case.
+    let hud_ctx: Option<exquis::hud_ctx::HudExquisHandle> = if hud || tune_supercollider {
         let device_to_board: std::collections::BTreeMap<usize, String> = boards
             .iter()
             .map(|b| (b.device.number, b.board_name.clone()))

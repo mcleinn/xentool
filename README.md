@@ -165,8 +165,43 @@ Each script:
    scripts\run-all-exquis.bat
    ```
 
+5. The Wooting frontend additionally sets
+   `XENTOOL_EXTRA_ARGS=--tune-supercollider` (see below). The Exquis
+   frontend does not — Exquis routes through MPE pitch-bend retuning,
+   so SC's standard MIDI handling already produces the correct
+   microtonal pitch.
+
 To stop a single subsystem, focus its tab and press Ctrl-C (or close
 the tab). To stop everything, close the Windows Terminal window.
+
+#### `--tune-supercollider` (tuning broadcast for SC)
+
+SuperCollider doesn't ship with an MTS-ESP client, so on the **Wooting**
+flow (where xentool is the MTS-ESP master and SC has no way to read the
+table) xentool needs another channel to tell SC the active EDO + pitch
+offset. With `--tune-supercollider` set, xentool emits
+
+```
+/xentool/tuning <edo:int> <pitch_offset:int> <layout_id:str>
+```
+
+over UDP to `127.0.0.1:57120` (sclang's default OSC port) at startup,
+on every layout cycle, and every 3 s as a resync. The bundled
+`supercollider/midi_piano_xentool.scd` registers an
+`OSCdef('/xentool/tuning', …)` that updates `~tuningEdo` /
+`~pitchOffset`, so a tuning swap reaches the synth without restarting
+sclang.
+
+The flag is **off** by default, **on** for `run-all-wooting.bat`, and
+**not used** by `run-all-exquis.bat` (the MPE flow doesn't need it).
+To override the Wooting orchestrator's default — for example to test
+without the broadcast — set `XENTOOL_EXTRA_ARGS` to an empty string
+before calling:
+
+```powershell
+set XENTOOL_EXTRA_ARGS=
+scripts\run-all-wooting.bat
+```
 
 ### macOS
 
