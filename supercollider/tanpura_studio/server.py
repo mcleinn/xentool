@@ -52,25 +52,25 @@ DEFAULTS: dict[str, float] = {
     "reverbRoom":    0.88,
     "masterAmp":     1.0,
     # new studio-exposed kparams
-    "droneAmt":      0.25,
+    "droneAmt":      1.0,
     "droneType":     0.0,    # 0=CombL, 1=Sine+harm, 2=off, 3=Saw, 4=Tri, 5=Beating, 6=Pulse
     "jawariAmt":     0.7,
     "jawariMode":    0.0,    # 0=tanh+cubed, 1=tanh-only, 2=fold
     "jawariDrive":   6.0,
     "jawariCubed":   1.4,
     "sympAmt":       1.0,
-    "hiShelfFreq":   1500.0,
+    "hiShelfFreq":   2600.0,
     "hiShelfMin":    -24.0,
     "hiShelfMax":    24.0,
     "hiShelfMode":   0.0,    # 0=BHiShelf, 1=BPeakEQ, 2=off
     "loShelfFreq":   400.0,
-    "loShelfMin":    8.0,
+    "loShelfMin":    0.0,
     "loShelfMax":    -8.0,
     "loShelfMode":   0.0,    # 0=BLowShelf, 1=BPeakEQ, 2=off
-    "yMode":         0.0,    # 0=shelves, 1=RLPF, 2=BPF, 3=tremolo, 4=comb, 5=off
+    "yMode":         1.0,    # 0=shelves, 1=RLPF (sitar/sarod wah — factory pick), 2=BPF, 3=tremolo, 4=comb, 5=off
     "pressSwellLo":  0.3,
     "pressSwellHi":  2.0,
-    "limiterThresh": 0.95,
+    "limiterThresh": 0.6,
 }
 
 # User-default singleton: when present, overrides DEFAULTS at startup and on

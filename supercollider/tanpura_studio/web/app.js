@@ -23,7 +23,7 @@
     {
       id: 'drone',
       title: 'Drone (CombL sustain)',
-      open: false,
+      open: true,
       controls: [
         { name: 'droneAmt', label: 'Drone amount (× white-noise excitation)', min: 0, max: 2, step: 0.01, fmt: v => v.toFixed(2) },
         { type: 'mode', name: 'droneType', label: 'Drone type', options: [
@@ -40,7 +40,7 @@
     {
       id: 'jawari',
       title: 'Jawari (nonlinearity)',
-      open: false,
+      open: true,
       controls: [
         { name: 'jawariAmt',   label: 'Jawari wet/dry mix (0=dry, 0.7=v1, 1=full)', min: 0,   max: 1,    step: 0.01, fmt: v => v.toFixed(2) },
         { name: 'jawariDrive', label: 'Pre-tanh drive coefficient',                 min: 0,   max: 12,   step: 0.1,  fmt: v => v.toFixed(1) },
@@ -55,7 +55,7 @@
     {
       id: 'symp',
       title: 'Sympathy (DelayC)',
-      open: false,
+      open: true,
       controls: [
         { name: 'sympAmt', label: 'Sympathy mix (0=bypass, 1=v1)', min: 0, max: 1, step: 0.01, fmt: v => v.toFixed(2) },
       ],
@@ -63,7 +63,7 @@
     {
       id: 'eq',
       title: 'Y-axis tonal effect',
-      open: false,
+      open: true,
       controls: [
         { type: 'mode', name: 'yMode', label: 'Y-axis effect', options: [
           { value: 0, text: 'EQ shelves (default)' },
@@ -94,7 +94,7 @@
     {
       id: 'dynamics',
       title: 'Dynamics (Z-axis swell + limiter)',
-      open: false,
+      open: true,
       controls: [
         { name: 'pressSwellLo',  label: 'Amp swell at press=0', min: 0,   max: 2,   step: 0.01, fmt: v => v.toFixed(2) },
         { name: 'pressSwellHi',  label: 'Amp swell at press=1', min: 0,   max: 4,   step: 0.01, fmt: v => v.toFixed(2) },
@@ -340,6 +340,22 @@
           applyState(res.state);
           toast('reset to defaults');
         }
+      });
+    });
+
+    onClick('btnFactoryReset', function () {
+      if (!confirm('Factory reset?\n\nThis deletes presets/_default.json (your saved default) and resets all parameters to the SC patch\'s factory values. Saved presets are kept.')) return;
+      postJson('/api/clear-default', {}).then(function () {
+        return postJson('/api/reset', {});
+      }).then(function (res) {
+        if (res && res.ok) {
+          applyState(res.state);
+          toast('factory reset complete');
+        } else {
+          toast('factory reset failed', 4000);
+        }
+      }).catch(function () {
+        toast('factory reset failed', 4000);
       });
     });
 

@@ -27,7 +27,7 @@
 
 s.waitForBoot({
 
-    SynthDef(\mpeTanpuraXentool, { |freq=220, gate=1, bend=0, bright=0.5, press=0, vel=0.5, decay=11, dampScale=1, brightScale=1, droneAmt=0.25, droneType=0, jawariAmt=0.7, jawariMode=0, jawariDrive=6, jawariCubed=1.4, sympAmt=1, hiShelfFreq=1500, hiShelfMin=(-24), hiShelfMax=24, hiShelfMode=0, loShelfFreq=400, loShelfMin=8, loShelfMax=(-8), loShelfMode=0, yMode=0, pressSwellLo=0.3, pressSwellHi=2.0, limiterThresh=0.95|
+    SynthDef(\mpeTanpuraXentool, { |freq=220, gate=1, bend=0, bright=0.5, press=0, vel=0.5, decay=11, dampScale=1, brightScale=1, droneAmt=1.0, droneType=0, jawariAmt=0.7, jawariMode=0, jawariDrive=6, jawariCubed=1.4, sympAmt=1, hiShelfFreq=2600, hiShelfMin=(-24), hiShelfMax=24, hiShelfMode=0, loShelfFreq=400, loShelfMin=0, loShelfMax=(-8), loShelfMode=0, yMode=1, pressSwellLo=0.3, pressSwellHi=2.0, limiterThresh=0.6|
         var bendRatio, freqSm, brightSm, pressSm, brightMul, ksCoef;
         var burst, string, sig, sigJawari, sigSymp, ampFol, env, sustainEx;
         var droneSig, droneBrightHz, hiShelfSig, hiPeakSig, loShelfSig, loPeakSig;
@@ -413,25 +413,25 @@ s.waitForBoot({
         brightScale:   1.0,    // Burst-LPF cutoff multiplier    — Button 3
         // Studio-controllable extras (see SynthDef args). All defaults
         // reproduce v1 exactly.
-        droneAmt:      0.25,
+        droneAmt:      1.0,
         droneType:     0,      // 0=CombL, 1=Sine+harm, 2=off, 3=Saw, 4=Tri, 5=Beating, 6=Pulse
         jawariAmt:     0.7,
         jawariMode:    0,      // 0=tanh+cubed, 1=tanh-only, 2=fold
         jawariDrive:   6,
         jawariCubed:   1.4,
         sympAmt:       1.0,
-        hiShelfFreq:   1500,
+        hiShelfFreq:   2600,
         hiShelfMin:    -24,
         hiShelfMax:    24,
         hiShelfMode:   0,      // 0=BHiShelf, 1=BPeakEQ, 2=off
         loShelfFreq:   400,
-        loShelfMin:    8,
+        loShelfMin:    0,
         loShelfMax:    -8,
         loShelfMode:   0,      // 0=BLowShelf, 1=BPeakEQ, 2=off
-        yMode:         0,      // 0=shelves, 1=RLPF, 2=BPF, 3=tremolo, 4=comb, 5=off
+        yMode:         1,      // 0=shelves, 1=RLPF (sitar/sarod wah — factory pick), 2=BPF, 3=tremolo, 4=comb, 5=off
         pressSwellLo:  0.3,
         pressSwellHi:  2.0,
-        limiterThresh: 0.95
+        limiterThresh: 0.6
     );
 
     // Cycle preset banks for the buttons. Index starts at the "classic" slot.
@@ -807,13 +807,13 @@ s.waitForBoot({
         var defaults = (
             decay: 11, reverbMix: 0.45, reverbRoom: 0.88, masterAmp: 1.0,
             dampScale: 1.0, brightScale: 1.0,
-            droneAmt: 0.25, droneType: 0,
+            droneAmt: 1.0, droneType: 0,
             jawariAmt: 0.7, jawariMode: 0, jawariDrive: 6, jawariCubed: 1.4,
             sympAmt: 1.0,
-            hiShelfFreq: 1500, hiShelfMin: -24, hiShelfMax: 24, hiShelfMode: 0,
-            loShelfFreq: 400, loShelfMin: 8, loShelfMax: -8, loShelfMode: 0,
-            yMode: 0,
-            pressSwellLo: 0.3, pressSwellHi: 2.0, limiterThresh: 0.95
+            hiShelfFreq: 2600, hiShelfMin: -24, hiShelfMax: 24, hiShelfMode: 0,
+            loShelfFreq: 400, loShelfMin: 0, loShelfMax: -8, loShelfMode: 0,
+            yMode: 1,
+            pressSwellLo: 0.3, pressSwellHi: 2.0, limiterThresh: 0.6
         );
         defaults.keysValuesDo { |k, v| ~studioApply.value(k.asString, v) };
         "[studio] reset to defaults".postln;
