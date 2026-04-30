@@ -252,6 +252,62 @@ setup_xenharm() {
 
 # ---------- supercollider ----------
 
+setup_studio() {
+    # Tanpura studio (Exquis backend) or piano studio (Wooting backend).
+    # Both are Flask + python-osc relays that talk to the matching SC
+    # patch over OSC. Reuses the xenharm venv (saves disk space and
+    # avoids a second pip install dance); falls back to creating a
+    # dedicated venv if xenharm wasn't installed.
+    local studio_dir studio_label
+    case "$BACKEND" in
+        wooting) studio_dir="$REPO_ROOT/supercollider/piano_studio";   studio_label="piano studio (http://localhost:9101/)" ;;
+        *)       studio_dir="$REPO_ROOT/supercollider/tanpura_studio"; studio_label="tanpura studio (http://localhost:9100/)" ;;
+    esac
+    step "Studio web UI: $studio_label"
+    if [[ ! -f "$studio_dir/server.py" ]]; then
+        warn "  $studio_dir/server.py missing — skipping."
+        STUDIO_INSTALLED=0
+        return
+    fi
+    if ! yesno "  Install + autostart the studio web UI?" Y; then
+        warn "  Skipping studio. xentool + SC still work without it."
+        STUDIO_INSTALLED=0
+        return
+    fi
+
+    # Reuse xenharm's venv (created earlier in setup_xenharm). If absent,
+    # create a small dedicated one — same Python detection logic.
+    if [[ -n "${XENHARM_VENV:-}" && -x "$XENHARM_VENV/bin/python" ]]; then
+        STUDIO_VENV="$XENHARM_VENV"
+        ok "  Reusing xenharm venv at $STUDIO_VENV"
+    else
+        STUDIO_VENV="$HOME/.local/share/xentool/studio-venv"
+        local studio_py
+        studio_py="$(detect_python || true)"
+        if [[ -z "$studio_py" ]]; then
+            err "  No Python ≥3.10 found. Skipping studio."
+            STUDIO_INSTALLED=0
+            return
+        fi
+        if [[ ! -d "$STUDIO_VENV" ]]; then
+            step "  Creating venv at $STUDIO_VENV"
+            "$studio_py" -m venv "$STUDIO_VENV" || {
+                err "  venv creation failed. Skipping studio."
+                STUDIO_INSTALLED=0
+                return
+            }
+        fi
+    fi
+
+    step "  Installing Flask + python-osc into $STUDIO_VENV"
+    "$STUDIO_VENV/bin/pip" install --upgrade pip >/dev/null
+    "$STUDIO_VENV/bin/pip" install -r "$studio_dir/requirements.txt" >/dev/null
+    ok "  studio python deps ready"
+    STUDIO_PY_BIN="$STUDIO_VENV/bin/python"
+    STUDIO_DIR="$studio_dir"
+    STUDIO_INSTALLED=1
+}
+
 setup_supercollider() {
     step "SuperCollider tanpura synth (mpe_tanpura_xentool.scd)"
     if ! yesno "  Install + autostart the SuperCollider tanpura synth?" N; then
@@ -361,6 +417,31 @@ WRAP
     ok "  wrote $bin"
 }
 
+write_studio_unit() {
+    [[ "${STUDIO_INSTALLED:-0}" == 1 ]] || return
+    local title port
+    case "$BACKEND" in
+        wooting) title="piano studio";   port=9101 ;;
+        *)       title="tanpura studio"; port=9100 ;;
+    esac
+    write_unit xentool-studio.service <<UNIT
+[Unit]
+Description=$title web UI for xentool ($BACKEND backend, http://localhost:$port/)
+After=xentool-supercollider.service sound.target
+Wants=xentool-supercollider.service
+
+[Service]
+Type=simple
+ExecStart=$STUDIO_PY_BIN $STUDIO_DIR/server.py
+WorkingDirectory=$STUDIO_DIR
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+UNIT
+}
+
 write_supercollider_unit() {
     [[ "${SC_INSTALLED:-0}" == 1 ]] || return
     # Exquis pads emit MPE; Wooting emits classic 12/N-EDO MIDI. The
@@ -412,6 +493,7 @@ start_services() {
     [[ "${XENHARM_INSTALLED:-0}" == 1 ]] && units+=(xenharm.service)
     units+=(xentool.service)
     [[ "${SC_INSTALLED:-0}"      == 1 ]] && units+=(xentool-supercollider.service)
+    [[ "${STUDIO_INSTALLED:-0}"  == 1 ]] && units+=(xentool-studio.service)
 
     for u in "${units[@]}"; do
         systemctl --user enable "$u"
@@ -509,6 +591,13 @@ print_post_install_help() {
     echo "  journalctl --user -u xentool -f"
     [[ "${XENHARM_INSTALLED:-0}" == 1 ]] && echo "  journalctl --user -u xenharm -f"
     [[ "${SC_INSTALLED:-0}"      == 1 ]] && echo "  journalctl --user -u xentool-supercollider -f"
+    [[ "${STUDIO_INSTALLED:-0}"  == 1 ]] && {
+        local sport
+        case "$BACKEND" in wooting) sport=9101 ;; *) sport=9100 ;; esac
+        echo "  journalctl --user -u xentool-studio -f"
+        echo
+        echo "Studio web UI: http://localhost:$sport/"
+    }
     echo
     echo "Manage services:"
     echo "  systemctl --user status xentool"
@@ -561,6 +650,7 @@ install_linux_main() {
 
     setup_xenharm
     setup_supercollider
+    setup_studio
 
     prompt_layout "$LAYOUT_KIND" "$REPO_ROOT/$LAYOUT_KIND"
     # Note: there's no MIDI-output prompt anymore — xentool creates its own
@@ -573,6 +663,7 @@ install_linux_main() {
     write_xenharm_unit
     write_xentool_unit
     write_supercollider_unit
+    write_studio_unit
     write_xentool_tui_helper
 
     enable_lingering

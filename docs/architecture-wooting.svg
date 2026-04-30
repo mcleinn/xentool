@@ -192,4 +192,25 @@
   </g>
   <line x1="600" y1="780" x2="600" y2="820" stroke="#333" stroke-width="1.8" marker-end="url(#arrow)"/>
   <text x="615" y="805" font-size="10" fill="#333" font-style="italic">stereo audio</text>
+
+  <!-- ============================================================
+       Optional piano_studio (Flask relay) on the right, beside SC
+       ============================================================ -->
+  <g filter="url(#shadow)">
+    <rect x="920" y="660" width="240" height="120" rx="10" fill="#d6ecf7" stroke="#306c8d" stroke-width="2"/>
+    <text x="1040" y="690" text-anchor="middle" font-size="14" font-weight="700" fill="#143b59">piano studio</text>
+    <text x="1040" y="710" text-anchor="middle" font-size="11" fill="#234d6f">Flask + python-osc</text>
+    <text x="1040" y="728" text-anchor="middle" font-size="10" fill="#345e7f">touchscreen UI · http://localhost:9101/</text>
+    <text x="1040" y="746" text-anchor="middle" font-size="10" fill="#345e7f">voice piano/organ/Rhodes · Y-axis fx</text>
+    <text x="1040" y="764" text-anchor="middle" font-size="10" fill="#345e7f">/api/set, /api/batch, /api/save-default</text>
+  </g>
+  <!-- studio → SC via OSC 57123 (live tweaks) -->
+  <path d="M 920 720 L 900 720" stroke="#2b7d2b" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <rect x="816" y="678" width="92" height="22" fill="#fafbfc" rx="3"/>
+  <text x="862" y="694" text-anchor="middle" font-size="10" fill="#1f4f1f" font-style="italic">
+    OSC :57123
+  </text>
+  <!-- studio ← browser via HTTP -->
+  <path d="M 1040 660 Q 1040 580, 1080 540" stroke="#666" stroke-width="1.4" fill="none" stroke-dasharray="4 3" marker-end="url(#arrow-dim)"/>
+  <text x="1148" y="600" text-anchor="middle" font-size="10" fill="#555" font-style="italic">browser HTTP :9101</text>
 </svg>

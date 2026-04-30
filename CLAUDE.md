@@ -61,11 +61,39 @@ Frontend assets:
 External integrations / sidecars:
 - `xenharm_service/` — Python 3.10+ HTTP service (xenharmlib) that maps `(edo, abs_pitch)` to short ASCII + Bravura PUA Unicode. Auto-detected by the HUD; optional.
 - `supercollider/mpe_tanpura_xentool.scd` — SC patch that listens on the loopMIDI/Midi-Through port and renders the MPE input as a microtonal tanpura. Sends OSC parameter updates to xentool's HUD.
+- `supercollider/midi_piano_xentool.scd` — SC patch for the Wooting/classic-MIDI flow. Multi-voice (piano / Hammond organ / Rhodes EP), with press-driven sustain drone and a CC74-driven Y-axis effect (LPF / tremolo / Leslie / chorus / vibrato).
+- `supercollider/tanpura_studio/` — Flask + python-osc relay (HTTP 9100, OSC 57121) and vanilla-JS touchscreen UI that tweaks the tanpura SynthDef live. Save/Load presets land in `presets/preset_<ts>.json`; a singleton `presets/_default.json` is auto-loaded at startup and used by the Reset button. Independent from the HUD.
+- `supercollider/piano_studio/` — sister of `tanpura_studio/` for the piano patch (HTTP 9101, OSC 57123). Same shape; piano-specific SECTIONS and conditional `showWhen` controls (e.g. piano-tone sliders only when voice=piano; Leslie speed sliders only when yMode=Leslie).
+
+Wire-shape summary for both studios — UI → relay → sclang:
+
+```
+browser (HTTP 9100/9101)
+   │  POST /api/set {name,value} | /api/batch | /api/save | /api/load | /api/reset
+   │  GET  /api/state | /api/presets
+   ▼
+Flask relay (server.py)              ─── tracks `state` dict in memory
+   │  fire-and-forget UDP to sclang
+   │  /tanpura/set <name> <float>    (or /piano/set ...)
+   │  /tanpura/batch <name1> <v1> ...
+   │  /tanpura/reset                  (handlers also push reset to SC)
+   ▼
+sclang (UDP 57121 / 57123)          ─── OSCdef updates ~kparams + Synth.set
+   │                                     on every currently-held voice
+   ▼
+scsynth                              ─── audio out via ~xxxReverbSynth → ~xxxMasterSynth
+```
+
+User-default flow: clicking "Make default" POSTs `/api/save-default`, which writes `presets/_default.json`. On next `python server.py`, `_effective_defaults()` overlays that file on the hardcoded DEFAULTS, and `/api/reset` always returns to the user default if it exists. "Factory reset" POSTs `/api/clear-default` (deletes the file) then `/api/reset` (which then falls through to factory).
 
 Linux install scripts (`scripts/`):
-- `install-linux-common.sh` — sourced by both wrappers; defines `install_linux_main` (apt deps, Rust toolchain, build, optional xenharm venv, optional SuperCollider, systemd user units, tmux-wrapped xentool service).
+- `install-linux-common.sh` — sourced by both wrappers; defines `install_linux_main` (apt deps, Rust toolchain, build, optional xenharm venv, optional SuperCollider, optional studio web UI, systemd user units, tmux-wrapped xentool service).
 - `install-linux-exquis.sh` / `install-linux-wooting.sh` — thin wrappers; the Wooting one additionally installs the Wooting Analog + RGB SDKs (logic inlined from the former `install-wooting-sdks.sh`).
 - The xentool service runs inside `tmux -L xentool` so the TUI lives in a real pty; users attach via `xentool-tui` (a one-line wrapper installed at `~/.local/bin/`).
+- `setup_studio()` is backend-aware: Exquis → tanpura_studio (HTTP 9100), Wooting → piano_studio (HTTP 9101). Reuses the xenharm venv when present (saves disk) and writes a `xentool-studio.service` unit that starts after `xentool-supercollider.service`.
+
+Windows launchers (`scripts/`):
+- `run-all-exquis.bat` / `run-all-wooting.bat` — open a single Windows Terminal window with up to 4 tabs (xentool, xenharm, supercollider, studio). The 4th tab is conditional on `STUDIO_SCRIPT` being set; exquis sets it to `_run-all-studio.bat` (tanpura), wooting sets it to `_run-all-piano-studio.bat`. Falls back to detached cmd windows when wt isn't installed.
 
 ## Critical design decision: snapshot-based LED control
 

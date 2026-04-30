@@ -45,55 +45,137 @@
 
 s.waitForBoot({
 
-    SynthDef(\piano, { |freq=440, amp=0.3, gate=1, press=0, bend=0|
-        var hammer, strings, sig, env, pressSm, sustainEx, sustain;
-        var bendRatio, freqSm;
+    SynthDef(\piano, { |freq=440, amp=0.3, gate=1, press=0, bend=0, bright=0.5,
+        voice=0,                        // 0=piano, 1=organ, 2=Rhodes EP
+        attackTime=0.001, decayTime=0.18, sustainLevel=1.0, releaseTime=0.18,
+        velSensitivity=1.0,
+        dampScale=1, brightScale=1, hammerHardness=100, detuneAmt=0.003,
+        droneAmt=1.0, droneType=0,      // 0=CombL, 1=Sine, 2=Off
+        pressSwellLo=1.0, pressSwellHi=1.0,
+        yMode=5, yRate=5,               // 0=LPF, 1=Trem, 2=Leslie, 3=Chorus, 4=Vibrato, 5=Off
+        leslieMin=0.7, leslieMax=7.0|
 
-        // ── Per-channel pitch bend ──────────────────────────────────
-        // `bend` is in semitones (set per-voice from xentool's 14-bit
-        // pitch-bend, scaled by `~bendRange`). `lag(0.025)` smooths
-        // .set() jumps so glissando-style bend sweeps don't zip. At
-        // `bend = 0` the ratio is exactly 1 so the synth is unchanged.
+        var hammer, strings, pianoSig, organSig, rhodesSig, sig, env;
+        var pressSm, brightSm, sustainEx, sustain;
+        var bendRatio, freqSm;
+        var rhodesAttack, leslieLfo;
+        var yLpfSig, yTremSig, yLeslieSig, yChorusSig, yVibSig;
+
+        // Smoothed expression: kill .set() zipper noise.
         bendRatio = (2 ** (bend / 12)).lag(0.025);
         freqSm    = freq * bendRatio;
-
-        // ── Hammer strike: filtered noise burst (unchanged) ──────────
-        hammer = WhiteNoise.ar(0.5) * EnvGen.kr(Env.perc(0.001, 0.02));
-        hammer = HPF.ar(hammer, 100);
-
-        // ── Three slightly detuned strings ──────────────────────────
-        // Use `freqSm` so all three strings retune together when bend
-        // arrives. The detune ratios (×1.003 / ×0.997) are unchanged.
-        strings = Mix([
-            Pluck.ar(hammer, Impulse.kr(0), 0.05, freqSm.reciprocal,           8, 0.45),
-            Pluck.ar(hammer, Impulse.kr(0), 0.05, (freqSm * 1.003).reciprocal, 8, 0.45) * 0.6,
-            Pluck.ar(hammer, Impulse.kr(0), 0.05, (freqSm * 0.997).reciprocal, 8, 0.45) * 0.6,
-        ]);
-
-        // Velocity → brightness; a hint of soundboard resonance (unchanged)
-        sig = LPF.ar(strings, 800 + (amp * 4500));
-        sig = sig + (CombC.ar(sig, 0.04, 0.03, 1) * 0.15);
-
-        // ── Sustain body driven by channel/poly aftertouch ──────────
-        // Quiet noise-excited CombL waveguide tuned to `freqSm`, scaled
-        // by smoothed aftertouch. At `press = 0` `sustainEx` is exactly
-        // zero, so this branch contributes nothing and the original
-        // hammer-pluck timbre is unchanged. As pressure rises the
-        // sustained body fades in and keeps the note speaking past the
-        // ~8 s natural Pluck decay.
+        brightSm  = bright.lag(0.10);
         pressSm   = press.lag(0.08);
-        sustainEx = WhiteNoise.ar(1) * 0.02 * pressSm;
+
+        // === Piano voice (Pluck/Karplus-Strong + soundboard) ===
+        // Three slightly-detuned strings give the natural piano chorus.
+        // detuneAmt sweeps from 0 (perfect unison) to ~0.01 (honky-tonk).
+        hammer = WhiteNoise.ar(0.5) * EnvGen.kr(Env.perc(0.001, 0.02));
+        hammer = HPF.ar(hammer, hammerHardness);
+        strings = Mix([
+            Pluck.ar(hammer, Impulse.kr(0), 0.05, freqSm.reciprocal,                       8 * dampScale, 0.45),
+            Pluck.ar(hammer, Impulse.kr(0), 0.05, (freqSm * (1 + detuneAmt)).reciprocal,   8 * dampScale, 0.45) * 0.6,
+            Pluck.ar(hammer, Impulse.kr(0), 0.05, (freqSm * (1 - detuneAmt)).reciprocal,   8 * dampScale, 0.45) * 0.6,
+        ]);
+        pianoSig = LPF.ar(strings, (800 + (amp * 4500)) * brightScale);
+        pianoSig = pianoSig + (CombC.ar(pianoSig, 0.04, 0.03, 1) * 0.15);
+
+        // === Organ voice (Hammond-style additive drawbars) ===
+        // Fixed lower drawbars (8' + 4' equivalents at fundamental + 2nd)
+        // give a body that's audible even at bright=0; brightness opens up
+        // upper drawbars (3rd / 4th / 6th harmonics) for a more piercing
+        // top-end-on full Y.
+        organSig = (
+            (SinOsc.ar(freqSm)     * 0.6)
+            + (SinOsc.ar(freqSm * 2) * 0.4)
+            + (SinOsc.ar(freqSm * 3) * 0.3 * brightSm)
+            + (SinOsc.ar(freqSm * 4) * 0.25 * brightSm)
+            + (SinOsc.ar(freqSm * 6) * 0.2 * brightSm.squared)
+            + (SinOsc.ar(freqSm * 8) * 0.15 * brightSm.squared)
+        ) * 0.4;
+
+        // === Rhodes EP voice (sine + percussive bell harmonics) ===
+        // Approximation of a Yamaha DX-style EP: pure sine fundamental with
+        // a fast percussive bell-like overtone burst on the attack. Avoids
+        // proper FM (PMOsc) for portability; close enough for the studio.
+        rhodesAttack = EnvGen.kr(Env.perc(0.001, 0.25));
+        rhodesSig = (
+            (SinOsc.ar(freqSm) * 0.6)
+            + (SinOsc.ar(freqSm * 4) * 0.4 * rhodesAttack)
+            + (SinOsc.ar(freqSm * 7) * 0.2 * rhodesAttack)
+        );
+
+        // === Voice select ===
+        sig = Select.ar(voice, [pianoSig, organSig, rhodesSig]);
+
+        // === Press-driven sustain body (works for any voice) ===
+        // Quiet noise-excited resonator tuned to freqSm. droneAmt scales
+        // amplitude; droneType picks the sustain DSP. CombL keeps the
+        // pluck-derived character past Pluck's natural decay.
+        sustainEx = WhiteNoise.ar(1) * 0.02 * pressSm * droneAmt;
         sustainEx = LPF.ar(sustainEx, 800 + (pressSm * 4000));
-        sustain   = CombL.ar(sustainEx, 0.05, freqSm.reciprocal, 4);
-        sig       = sig + sustain;
+        sustain = Select.ar(droneType, [
+            CombL.ar(sustainEx, 0.05, freqSm.reciprocal, 4),
+            SinOsc.ar(freqSm) * 0.05 * pressSm * droneAmt,
+            DC.ar(0)
+        ]);
+        sig = sig + sustain;
 
-        // Release on noteOff via gate=0 (unchanged)
-        env = EnvGen.kr(Env.asr(0.001, 1, 0.18, curve: -4), gate, doneAction: 2);
+        // === Y-axis effect (post-synth) ===
+        // yMode picks what brightSm drives. Defaults to 5 (Off) so the
+        // patch sounds identical to the original until the user opts in.
+        //   0 = LPF (tone — Y closes the lid on a piano)
+        //   1 = Tremolo (Rhodes / Wurlitzer amp wobble at yRate Hz)
+        //   2 = Leslie (rotary speaker — Y drives speed slow→fast)
+        //   3 = Chorus (organ/EP shimmer; Y drives mod depth)
+        //   4 = Vibrato (delay-line pitch mod at yRate Hz)
+        //   5 = Off (no post-synth effect)
+        yLpfSig    = LPF.ar(sig, brightSm.linexp(0, 1, 250, 12000).clip(20, 18000));
+        yTremSig   = sig * SinOsc.kr(yRate).range(1 - (brightSm * 0.6), 1);
+        leslieLfo  = SinOsc.kr(brightSm.linlin(0, 1, leslieMin, leslieMax));
+        yLeslieSig = sig * leslieLfo.range(0.75, 1.0)
+                     + (DelayC.ar(sig, 0.02, leslieLfo.range(0.001, 0.005)) * 0.5);
+        yChorusSig = sig + (DelayC.ar(sig, 0.03, SinOsc.kr(0.6).range(0.005, 0.020) * brightSm) * 0.5);
+        yVibSig    = DelayC.ar(sig, 0.01, 0.005 + (SinOsc.kr(yRate).range(-1, 1) * 0.003 * brightSm));
 
-        Out.ar(0, Pan2.ar(sig * env * amp * 0.5, 0));
+        sig = Select.ar(yMode, [yLpfSig, yTremSig, yLeslieSig, yChorusSig, yVibSig, sig]);
+
+        // === ADSR envelope ===
+        // attackTime/decayTime/sustainLevel/releaseTime expose what was
+        // hardcoded `Env.asr(0.001, 1, 0.18)` in the original.
+        env = EnvGen.kr(
+            Env.adsr(attackTime, decayTime, sustainLevel, releaseTime, curve: -4),
+            gate, doneAction: 2);
+
+        // === Press swell ===
+        // Default 1.0/1.0 = no swell (preserves original loudness curve).
+        sig = sig * env * (pressSwellLo + (pressSm * (pressSwellHi - pressSwellLo)));
+
+        // velSensitivity bends the velocity → amp curve. 1.0 = linear (current),
+        // <1 compresses (loud at low vel), >1 expands (quiet at low vel).
+        sig = sig * (amp.pow(velSensitivity)) * 0.5;
+
+        Out.ar(0, Pan2.ar(sig, 0));
+    }).add;
+
+    SynthDef(\pianoReverb, { |mix=0.18, room=0.72, damp=0.5|
+        var sig = In.ar(0, 2);
+        sig = FreeVerb2.ar(sig[0], sig[1], mix.lag(0.05), room.lag(0.05), damp);
+        ReplaceOut.ar(0, sig);
+    }).add;
+
+    SynthDef(\pianoMaster, { |amp=1|
+        var sig = In.ar(0, 2);
+        sig = sig * amp.lag(0.05);
+        ReplaceOut.ar(0, sig);
     }).add;
 
     s.sync;
+
+    // Reverb is added first so master sits after it in the chain
+    // (voices → reverb → master → output).
+    ~pianoReverbSynth = Synth.tail(s, \pianoReverb);
+    ~pianoMasterSynth = Synth.tail(s, \pianoMaster);
 
     MIDIClient.init;
     MIDIIn.connectAll;
@@ -131,6 +213,41 @@ s.waitForBoot({
             ~tuningEdo, ~pitchOffset, layoutId
         ).postln;
     }, '/xentool/tuning');
+
+    // ── Studio-controllable performance parameters ──────────────────────
+    // All start at values that reproduce the original sound. The
+    // piano_studio web UI tweaks these via OSC (/piano/set, /piano/batch);
+    // changes propagate to currently-held voices via Synth.set and to new
+    // voices through the noteOn handler below.
+    ~kparams = (
+        // Voice & global
+        voice:          0,      // 0=piano, 1=organ, 2=Rhodes
+        velSensitivity: 1.0,
+        // ADSR
+        attackTime:     0.001,
+        decayTime:      0.18,
+        sustainLevel:   1.0,
+        releaseTime:    0.18,
+        // Piano-specific
+        dampScale:      1.0,
+        brightScale:    1.0,
+        hammerHardness: 100,
+        detuneAmt:      0.003,
+        // Drone/sustain
+        droneAmt:       1.0,
+        droneType:      0,      // 0=CombL, 1=Sine, 2=Off
+        pressSwellLo:   1.0,
+        pressSwellHi:   1.0,
+        // Y-axis effect
+        yMode:          5,      // 0=LPF, 1=Trem, 2=Leslie, 3=Chorus, 4=Vibrato, 5=Off
+        yRate:          5.0,
+        leslieMin:      0.7,
+        leslieMax:      7.0,
+        // Output
+        reverbMix:      0.18,
+        reverbRoom:     0.72,
+        masterAmp:      1.0
+    );
 
     // Voices keyed by `(chan → (num → Synth))`. Wooting emits Lumatone
     // channel-striped MIDI: the same `num` on different channels is a
@@ -180,9 +297,27 @@ s.waitForBoot({
             ~notes[chan] = ~notes[chan] ?? ();
             ~notes[chan][num] !? { |old| old.release };
             ~notes[chan][num] = Synth(\piano, [
-                \freq, freq,
-                \amp,  vel.linexp(1, 127, 0.04, 0.5),
-                \bend, bendSemi
+                \freq,           freq,
+                \amp,            vel.linexp(1, 127, 0.04, 0.5),
+                \bend,           bendSemi,
+                \voice,          ~kparams.voice,
+                \velSensitivity, ~kparams.velSensitivity,
+                \attackTime,     ~kparams.attackTime,
+                \decayTime,      ~kparams.decayTime,
+                \sustainLevel,   ~kparams.sustainLevel,
+                \releaseTime,    ~kparams.releaseTime,
+                \dampScale,      ~kparams.dampScale,
+                \brightScale,    ~kparams.brightScale,
+                \hammerHardness, ~kparams.hammerHardness,
+                \detuneAmt,      ~kparams.detuneAmt,
+                \droneAmt,       ~kparams.droneAmt,
+                \droneType,      ~kparams.droneType,
+                \pressSwellLo,   ~kparams.pressSwellLo,
+                \pressSwellHi,   ~kparams.pressSwellHi,
+                \yMode,          ~kparams.yMode,
+                \yRate,          ~kparams.yRate,
+                \leslieMin,      ~kparams.leslieMin,
+                \leslieMax,      ~kparams.leslieMax
             ]);
         } {
             // velocity-zero noteOn == noteOff per MIDI spec
@@ -253,5 +388,81 @@ s.waitForBoot({
             dict.do { |s| s !? { s.set(\press, press) } };
         };
     });
+
+    // CC74 → bright (Y axis). The SynthDef uses `bright` for the active
+    // yMode (LPF/Trem/Leslie/Chorus/Vibrato). Wooting users can configure
+    // the analog Y axis to emit CC74 if they want a live tonal control;
+    // without that, `bright` stays at its 0.5 default and the post-synth
+    // effect is static.
+    MIDIdef.cc(\dbgCC74, { |val, num, chan, src|
+        var bright = (val / 127).clip(0, 1);
+        ~notes[chan] !? { |dict|
+            dict.do { |s| s !? { s.set(\bright, bright) } };
+        };
+    }, 74);
+
+    // ── Studio UI OSC listeners ──────────────────────────────────────────
+    // The piano_studio/ web UI (port 9101) sends OSC to UDP 57123.
+    // /piano/set <name> <value> updates ~kparams (so future noteOns pick
+    // up the new value) AND pushes the change to every currently-held
+    // voice via Synth.set, for live tweaking on already-sounding notes.
+    //
+    // Reverb / master are separate Synths; their set messages route to
+    // ~pianoReverbSynth / ~pianoMasterSynth instead of voice synths.
+    ~studioPort = 57123;
+    ~studioReplyAddr = NetAddr("127.0.0.1", 57124);
+    thisProcess.openUDPPort(~studioPort);
+
+    ~studioApply = { |name, value|
+        var key = name.asSymbol;
+        var floatVal = value.asFloat;
+        ~kparams[key] = floatVal;
+        case
+            { key == \reverbMix }  { ~pianoReverbSynth.set(\mix, floatVal) }
+            { key == \reverbRoom } { ~pianoReverbSynth.set(\room, floatVal) }
+            { key == \masterAmp }  { ~pianoMasterSynth.set(\amp, floatVal) }
+            {
+                ~notes.do { |dict|
+                    dict.do { |v| v.notNil.if({ v.set(key, floatVal) }) };
+                };
+            };
+    };
+
+    OSCdef(\pianoStudioSet, { |msg|
+        if(msg.size >= 3) { ~studioApply.value(msg[1], msg[2]) };
+    }, '/piano/set', recvPort: ~studioPort);
+
+    OSCdef(\pianoStudioBatch, { |msg|
+        var i = 1;
+        while({ i + 1 < msg.size }, {
+            ~studioApply.value(msg[i], msg[i + 1]);
+            i = i + 2;
+        });
+        "[piano studio] applied batch (% pairs)".format((msg.size - 1) / 2).postln;
+    }, '/piano/batch', recvPort: ~studioPort);
+
+    OSCdef(\pianoStudioDump, { |msg|
+        var pairs = List.new;
+        ~kparams.keysValuesDo { |k, v|
+            pairs.add(k.asString); pairs.add(v.asFloat);
+        };
+        ~studioReplyAddr.sendMsg('/piano/dump.reply', *pairs.asArray);
+        "[piano studio] dump replied (% params)".format(pairs.size / 2).postln;
+    }, '/piano/dump', recvPort: ~studioPort);
+
+    OSCdef(\pianoStudioReset, { |msg|
+        var defaults = (
+            voice: 0, velSensitivity: 1.0,
+            attackTime: 0.001, decayTime: 0.18, sustainLevel: 1.0, releaseTime: 0.18,
+            dampScale: 1.0, brightScale: 1.0, hammerHardness: 100, detuneAmt: 0.003,
+            droneAmt: 1.0, droneType: 0, pressSwellLo: 1.0, pressSwellHi: 1.0,
+            yMode: 5, yRate: 5.0, leslieMin: 0.7, leslieMax: 7.0,
+            reverbMix: 0.18, reverbRoom: 0.72, masterAmp: 1.0
+        );
+        defaults.keysValuesDo { |k, v| ~studioApply.value(k.asString, v) };
+        "[piano studio] reset to defaults".postln;
+    }, '/piano/reset', recvPort: ~studioPort);
+
+    "Piano studio OSC listening on udp://127.0.0.1:%".format(~studioPort).postln;
 
 });

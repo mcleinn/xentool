@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>piano studio</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>piano studio</h1>
+    <div class="actions">
+      <button id="btnReset" class="action danger">Reset</button>
+      <button id="btnFactoryReset" class="action danger">Factory reset</button>
+      <button id="btnMakeDefault" class="action">Make default</button>
+      <button id="btnSave" class="action primary">Save preset</button>
+      <button id="btnLoad" class="action">Load …</button>
+    </div>
+  </header>
+
+  <main id="sections">
+    <!-- Sections rendered by app.js from a config -->
+  </main>
+
+  <div id="loadOverlay" class="overlay" hidden>
+    <div class="overlay-card">
+      <h2>Load preset</h2>
+      <ul id="presetList"></ul>
+      <button id="btnLoadCancel">Cancel</button>
+    </div>
+  </div>
+
+  <div id="savedToast" class="toast" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

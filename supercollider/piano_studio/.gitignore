@@ -1,0 +1,5 @@
+# User-saved presets. Committing these would push session-specific tweaks
+# into everyone else's checkout. The auto-loaded `_default.json` IS
+# committed so a fresh clone boots into the curated default state.
+presets/preset_*.json
+__pycache__/

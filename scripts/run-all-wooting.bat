@@ -21,4 +21,9 @@ REM layout cycle. The Exquis flow doesn't need this — the Exquis backend
 REM uses MPE pitch-bend retuning, so SC's `num.midicps` + the bend gives
 REM the correct microtonal pitch.
 if not defined XENTOOL_EXTRA_ARGS set "XENTOOL_EXTRA_ARGS=--tune-supercollider"
+REM piano_studio Flask relay on http://localhost:9101 — touchscreen UI
+REM that tweaks the piano SynthDef live via OSC on 57123.
+if not defined STUDIO_SCRIPT      set "STUDIO_SCRIPT=_run-all-piano-studio.bat"
+if not defined STUDIO_TITLE       set "STUDIO_TITLE=piano studio"
+if not defined STUDIO_DIR         set "STUDIO_DIR=%~dp0..\supercollider\piano_studio"
 call "%~dp0_run-all-common.bat"
