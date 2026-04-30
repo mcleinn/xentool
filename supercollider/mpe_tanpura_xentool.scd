@@ -152,8 +152,76 @@ s.waitForBoot({
                               //   press reaches the synth's whole Z range.
                               //   Tune up/down per controller behaviour.
 
+    // ── Session logger ─────────────────────────────────────────────────────
+    // Off by default; flip to true to capture every MIDI event + the
+    // synth-parameter values it produced into a JSONL file. Used to
+    // reproduce a real play session inside the test rig
+    // (`supercollider/tests/tanpura/`) — once you hear the issue live,
+    // grep the log for that timestamp to recover the exact param vector
+    // the SynthDef saw.
+    //
+    // Writes are deferred: the MIDIdef callbacks only append a tiny JSON
+    // string to an in-memory list (microseconds, no I/O), and a separate
+    // Routine flushes the list to disk every 250 ms. Even at hard MPE
+    // event rates (300+/s) this stays well below the audio noise floor.
+    ~logEnabled = false;
+    ~logDir = PathName(thisProcess.nowExecutingPath).pathOnly +/+ "logs";
+    ~logQueue = List.new;
+    ~logPath = nil;
+
+    ~jsonStr = { |s|
+        "\"" ++ s.asString.replace("\\", "\\\\").replace("\"", "\\\"") ++ "\""
+    };
+    ~jsonNum = { |n|
+        if(n.isInteger) { n.asString } { n.round(0.0001).asString }
+    };
+    ~jsonObj = { |evt|
+        var pairs = List.new;
+        evt.keysValuesDo { |k, v|
+            var vStr = case
+                { v.isNumber } { ~jsonNum.(v) }
+                { v.isNil } { "null" }
+                { v == true } { "true" }
+                { v == false } { "false" }
+                { ~jsonStr.(v) };
+            pairs.add(~jsonStr.(k) ++ ":" ++ vStr);
+        };
+        "{" ++ pairs.asArray.join(",") ++ "}"
+    };
+
+    // Tiny when disabled (one boolean check + Event construction). Cheap
+    // when enabled (string format, list append). No I/O on this thread.
+    ~logEvent = { |evt|
+        if(~logEnabled) {
+            ~logQueue.add(~jsonObj.value(evt));
+        };
+    };
+
+    if(~logEnabled) {
+        var ts = Date.getDate.format("%Y%m%d-%H%M%S");
+        File.mkdir(~logDir);
+        ~logPath = ~logDir +/+ "tanpura_" ++ ts ++ ".jsonl";
+        "[log] session log: %".format(~logPath).postln;
+        Routine({
+            loop {
+                if(~logQueue.size > 0) {
+                    var batch = ~logQueue.copy;
+                    ~logQueue.clear;
+                    File.use(~logPath, "a", { |f|
+                        batch.do { |line|
+                            f.putString(line); f.putString($\n);
+                        };
+                    });
+                };
+                0.25.wait;
+            };
+        }).play;
+    };
+    // ── end session logger ─────────────────────────────────────────────────
+
     "".postln;
     "MPE tanpura (xentool) active. Bend range = ±% semi (matches --pb-range). Y/Z prints disabled. Ctrl+C to quit.".format(~mpeBendRange).postln;
+    if(~logEnabled) { "Session logging ON  →  %".format(~logPath).postln } { "Session logging off (set ~logEnabled = true at top to capture).".postln };
     "".postln;
 
     // ── OSC out to xentool's Live HUD ────────────────────────────────────────
@@ -217,6 +285,7 @@ s.waitForBoot({
         if(chan == 15) {
             var delta = val - 64;
             ~kparams.decay = (~kparams.decay + delta).clip(0.5, 60);
+            ~logEvent.((t: Main.elapsedTime, kind: \kparam, name: \decay, val: ~kparams.decay));
             "[enc1/decay]      → % s".format(~kparams.decay.round(0.1)).postln;
             ~hudParam.value("string", "decay", ~kparams.decay, "s");
             ~hudEvent.value("encoder 1: decay → %.1f s".format(~kparams.decay));
@@ -229,6 +298,7 @@ s.waitForBoot({
             var delta = val - 64;
             ~kparams.reverbMix = (~kparams.reverbMix + (delta * 0.05)).clip(0, 1);
             ~mpeReverbSynth.set(\mix, ~kparams.reverbMix);
+            ~logEvent.((t: Main.elapsedTime, kind: \kparam, name: \reverbMix, val: ~kparams.reverbMix));
             "[enc2/rev mix]    → %".format(~kparams.reverbMix.round(0.01)).postln;
             ~hudParam.value("reverb", "mix", ~kparams.reverbMix, nil);
             ~hudEvent.value("encoder 2: reverb mix → %.2f".format(~kparams.reverbMix));
@@ -241,6 +311,7 @@ s.waitForBoot({
             var delta = val - 64;
             ~kparams.reverbRoom = (~kparams.reverbRoom + (delta * 0.05)).clip(0, 1);
             ~mpeReverbSynth.set(\room, ~kparams.reverbRoom);
+            ~logEvent.((t: Main.elapsedTime, kind: \kparam, name: \reverbRoom, val: ~kparams.reverbRoom));
             "[enc3/rev room]   → %".format(~kparams.reverbRoom.round(0.01)).postln;
             ~hudParam.value("reverb", "room", ~kparams.reverbRoom, nil);
             ~hudEvent.value("encoder 3: reverb room → %.2f".format(~kparams.reverbRoom));
@@ -253,6 +324,7 @@ s.waitForBoot({
             var delta = val - 64;
             ~kparams.masterAmp = (~kparams.masterAmp + (delta * 0.05)).clip(0, 2);
             ~mpeMasterSynth.set(\amp, ~kparams.masterAmp);
+            ~logEvent.((t: Main.elapsedTime, kind: \kparam, name: \masterAmp, val: ~kparams.masterAmp));
             "[enc4/master]     → %".format(~kparams.masterAmp.round(0.01)).postln;
             ~hudParam.value("master", "amp", ~kparams.masterAmp, nil);
             ~hudEvent.value("encoder 4: master amp → %.2f".format(~kparams.masterAmp));
@@ -264,6 +336,7 @@ s.waitForBoot({
         if((chan == 15) and: { val > 0 }) {
             ~decayPresetIdx = (~decayPresetIdx + 1) % ~decayPresets.size;
             ~kparams.decay = ~decayPresets[~decayPresetIdx];
+            ~logEvent.((t: Main.elapsedTime, kind: \kparam, name: \decay, val: ~kparams.decay, source: \btn1));
             "[btn1/decay-cyc]  → preset[%/%] = % s".format(
                 ~decayPresetIdx + 1, ~decayPresets.size, ~kparams.decay).postln;
             ~hudParam.value("string", "decay", ~kparams.decay, "s");
@@ -278,6 +351,7 @@ s.waitForBoot({
             var labels = ["soft", "classic", "hard"];
             ~stringPresetIdx = (~stringPresetIdx + 1) % ~stringPresets.size;
             ~kparams.dampScale = ~stringPresets[~stringPresetIdx];
+            ~logEvent.((t: Main.elapsedTime, kind: \kparam, name: \dampScale, val: ~kparams.dampScale, label: labels[~stringPresetIdx]));
             "[btn2/string]     → % (dampScale=%)".format(
                 labels[~stringPresetIdx], ~kparams.dampScale).postln;
             ~hudParam.value("string", "dampScale", ~kparams.dampScale, nil);
@@ -292,6 +366,7 @@ s.waitForBoot({
             var labels = ["small", "classic", "large"];
             ~bodyPresetIdx = (~bodyPresetIdx + 1) % ~bodyPresets.size;
             ~kparams.brightScale = ~bodyPresets[~bodyPresetIdx];
+            ~logEvent.((t: Main.elapsedTime, kind: \kparam, name: \brightScale, val: ~kparams.brightScale, label: labels[~bodyPresetIdx]));
             "[btn3/body]       → % (brightScale=%)".format(
                 labels[~bodyPresetIdx], ~kparams.brightScale).postln;
             ~hudParam.value("string", "brightScale", ~kparams.brightScale, nil);
@@ -313,6 +388,12 @@ s.waitForBoot({
             ~bodyPresetIdx   = 1;
             ~mpeReverbSynth.set(\mix, ~kparams.reverbMix, \room, ~kparams.reverbRoom);
             ~mpeMasterSynth.set(\amp, ~kparams.masterAmp);
+            ~logEvent.((
+                t: Main.elapsedTime, kind: \kparamReset,
+                decay: ~kparams.decay, reverbMix: ~kparams.reverbMix,
+                reverbRoom: ~kparams.reverbRoom, masterAmp: ~kparams.masterAmp,
+                dampScale: ~kparams.dampScale, brightScale: ~kparams.brightScale
+            ));
             "[btn4/reset]      → all params back to classic defaults".postln;
             ~hudParam.value("string", "decay",       ~kparams.decay,       "s");
             ~hudParam.value("reverb", "mix",         ~kparams.reverbMix,   nil);
@@ -341,11 +422,12 @@ s.waitForBoot({
     // the user already saw the warning above and can decide to fix or proceed.
     MIDIdef.noteOn(\xtTanpuraOn, { |vel, num, chan, src|
         var bendSemi = ~mpeBendSemi[chan] ? 0;
+        var velNorm = vel.linexp(1, 127, 0.2, 1.0);
         if(vel > 0) {
             ~mpeVoices[chan] !? { |old| old.release };
             ~mpeVoices[chan] = Synth(\mpeTanpuraXentool, [
                 \freq,        num.midicps,
-                \vel,         vel.linexp(1, 127, 0.2, 1.0),
+                \vel,         velNorm,
                 \bend,        bendSemi,
                 \bright,      0.5,
                 \press,       0,
@@ -353,6 +435,15 @@ s.waitForBoot({
                 \dampScale,   ~kparams.dampScale,
                 \brightScale, ~kparams.brightScale
             ]);
+            ~logEvent.((
+                t: Main.elapsedTime, kind: \noteOn,
+                ch: chan + 1, note: num,
+                freq: num.midicps, vel: velNorm,
+                bend: bendSemi, bright: 0.5, press: 0,
+                decay: ~kparams.decay,
+                dampScale: ~kparams.dampScale,
+                brightScale: ~kparams.brightScale
+            ));
             "[noteOn]  ch=%  note=% vel=%  bend=% semi (% c)".format(
                 chan+1, num, vel,
                 bendSemi.round(0.001),
@@ -361,6 +452,7 @@ s.waitForBoot({
         } {
             ~mpeVoices[chan] !? { |v| v.release };
             ~mpeVoices[chan] = nil;
+            ~logEvent.((t: Main.elapsedTime, kind: \noteOff, ch: chan + 1, note: num, viaVel0: true));
         };
     }, srcID: ~xentoolUid);
 
@@ -370,17 +462,23 @@ s.waitForBoot({
         // Reset the last-logged bend so the first bend on a new touch is
         // guaranteed to print.
         ~mpeBendLogged[chan] = nil;
+        ~logEvent.((t: Main.elapsedTime, kind: \noteOff, ch: chan + 1, note: num));
         "[noteOff] ch=%  note=%".format(chan+1, num).postln;
     }, srcID: ~xentoolUid);
 
-    // Y / CC74: route to synth, no log.
+    // Y / CC74: route to synth, no postln (would flood). The session
+    // logger captures every event anyway when enabled.
     MIDIdef.cc(\xtTanpuraCC74, { |val, num, chan, src|
-        ~mpeVoices[chan] !? { |v| v.set(\bright, val / 127) };
+        var bright = val / 127;
+        ~mpeVoices[chan] !? { |v| v.set(\bright, bright) };
+        ~logEvent.((t: Main.elapsedTime, kind: \cc74, ch: chan + 1, bright: bright));
     }, 74, srcID: ~xentoolUid);
 
-    // Z / channel pressure: route to synth, no log.
+    // Z / channel pressure: route to synth, no postln. Logger captures.
     MIDIdef.touch(\xtTanpuraTouch, { |val, chan, src|
-        ~mpeVoices[chan] !? { |v| v.set(\press, (val / ~touchMax).clip(0, 1)) };
+        var press = (val / ~touchMax).clip(0, 1);
+        ~mpeVoices[chan] !? { |v| v.set(\press, press) };
+        ~logEvent.((t: Main.elapsedTime, kind: \touch, ch: chan + 1, press: press, raw: val));
     }, srcID: ~xentoolUid);
 
     // Pitch bend: track per-channel state so noteOn can log it, update synth,
@@ -394,6 +492,7 @@ s.waitForBoot({
         var step  = ~mpeBendLogStep;
         ~mpeBendSemi[chan] = semi;
         ~mpeVoices[chan] !? { |v| v.set(\bend, semi) };
+        ~logEvent.((t: Main.elapsedTime, kind: \bend, ch: chan + 1, semi: semi, raw: val));
         if(step.notNil and: { last.isNil or: { (semi - last).abs >= step } }) {
             ~mpeBendLogged[chan] = semi;
             "[bend]    ch=%  raw=%  Δ=%  → % semi (% c)  voice=%".format(
