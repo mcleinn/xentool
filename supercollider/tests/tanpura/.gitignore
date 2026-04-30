@@ -1,0 +1,5 @@
+# Output of tanpura_test_rig.scd + analyze_renders.py.
+# Recreated on every test run — committing it would balloon the repo
+# with binary WAVs and per-render artefacts that anyone can regenerate
+# from the test scripts.
+renders/
