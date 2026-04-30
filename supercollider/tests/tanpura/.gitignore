@@ -3,3 +3,8 @@
 # with binary WAVs and per-render artefacts that anyone can regenerate
 # from the test scripts.
 renders/
+replays/
+bisect_*/
+v*_renders/
+v*_replays/
+feature_diff.csv

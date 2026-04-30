@@ -27,11 +27,9 @@
 
 s.waitForBoot({
 
-    SynthDef(\mpeTanpuraXentool, { |freq=220, gate=1, bend=0, bright=0.5, press=0, vel=0.5, decay=11, dampScale=1, brightScale=1, droneAmt=0.25, droneType=0, jawariAmt=0.7, jawariMode=0, jawariDrive=6, jawariCubed=1.4, sympAmt=1, hiShelfFreq=1500, hiShelfMin=(-24), hiShelfMax=24, hiShelfMode=0, loShelfFreq=400, loShelfMin=8, loShelfMax=(-8), loShelfMode=0, yMode=0, pressSwellLo=0.3, pressSwellHi=2.0, limiterThresh=0.95|
+    SynthDef(\mpeTanpuraXentool, { |freq=220, gate=1, bend=0, bright=0.5, press=0, vel=0.5, decay=11, dampScale=1, brightScale=1|
         var bendRatio, freqSm, brightSm, pressSm, brightMul, ksCoef;
-        var burst, string, sig, sigJawari, sigSymp, ampFol, env, sustainEx;
-        var droneSig, droneBrightHz, hiShelfSig, hiPeakSig, loShelfSig, loPeakSig;
-        var shelfSig, yLpfSig, yBpfSig, yTremSig, yCombSig;
+        var burst, string, sig, ampFol, env, sustainEx;
 
         // Smoothed controls — kill zipper noise on .set
         bendRatio = (2 ** (bend / 12)).lag(0.025);
@@ -54,83 +52,23 @@ s.waitForBoot({
         // Karplus-Strong waveguide
         string = Pluck.ar(burst, Impulse.kr(0), 0.05, freqSm.reciprocal, decay, ksCoef);
 
-        // Z → sustain drone. droneAmt scales the drone amplitude.
-        // droneType picks the drone DSP. Indices 0/1/2 are kept stable
-        // for back-compat with saved presets; 3..6 are extras.
-        //   0 = CombL feedback delay (v1 default)
-        //   1 = Sine + bright-driven harmonic stack (Y morphs sine→4-harmonic)
-        //   2 = Off
-        //   3 = Saw, post-LPF cutoff driven by Y
-        //   4 = Triangle, post-LPF cutoff driven by Y
-        //   5 = Two detuned sines (~7 c) + bright-driven 2nd-harmonic shimmer
-        //   6 = Pulse, width and LPF cutoff driven by Y
-        sustainEx = WhiteNoise.ar(1) * 0.015 * pressSm * droneAmt;
+        // Z → sustain drone via parallel CombL waveguide
+        sustainEx = WhiteNoise.ar(1) * 0.015 * pressSm;
         sustainEx = LPF.ar(sustainEx, freqSm * brightMul);
-        // Bright-driven post-LPF cutoff for harmonic-rich oscillators.
-        // bright=0 → cutoff ≈ freq*1.5 (only fundamental survives, very dark);
-        // bright=1 → cutoff ≈ freq*30 (fully open).
-        droneBrightHz = (freqSm * brightSm.linexp(0, 1, 1.5, 30)).clip(20, 18000);
-        droneSig = Select.ar(droneType, [
-            CombL.ar(sustainEx, 0.05, freqSm.reciprocal, 4),
-            // Sine + brightness-injected harmonics. At bright=0 it's a pure
-            // sine; bright=1 stacks 2nd/3rd/4th harmonics with falling weights.
-            (SinOsc.ar(freqSm)
-              + (SinOsc.ar(freqSm * 2) * brightSm * 0.5)
-              + (SinOsc.ar(freqSm * 3) * brightSm.squared * 0.3)
-              + (SinOsc.ar(freqSm * 4) * brightSm.squared * 0.2)
-            ) * 0.04 * pressSm * droneAmt,
-            DC.ar(0),
-            LPF.ar(Saw.ar(freqSm), droneBrightHz) * 0.04 * pressSm * droneAmt,
-            LPF.ar(LFTri.ar(freqSm), droneBrightHz) * 0.06 * pressSm * droneAmt,
-            ((SinOsc.ar(freqSm * 0.997) * 0.5)
-              + (SinOsc.ar(freqSm * 1.003) * 0.5)
-              + (SinOsc.ar(freqSm * 2) * brightSm * 0.3)
-            ) * 0.05 * pressSm * droneAmt,
-            LPF.ar(Pulse.ar(freqSm, brightSm.linlin(0, 1, 0.5, 0.85)), droneBrightHz) * 0.04 * pressSm * droneAmt
-        ]);
-        string = string + droneSig;
+        string    = string + CombL.ar(sustainEx, 0.05, freqSm.reciprocal, 4);
 
-        // Amplitude-driven jawari. jawariAmt is wet/dry (0.7 = v1 mix).
-        // jawariMode selects the nonlinearity:
-        //   0 = tanh + cubed (v1)
-        //   1 = tanh only (softer — no extra harmonic injection)
-        //   2 = wave fold (richer, less harsh than tanh at high drive)
+        // Amplitude-driven jawari
         ampFol = Amplitude.ar(string, 0.005, 0.15) + (pressSm * 0.5);
-        sigJawari = Select.ar(jawariMode, [
-            (string * (1.0 + ampFol * jawariDrive)).tanh
-              + (string.cubed * ampFol * jawariCubed),
-            (string * (1.0 + ampFol * jawariDrive)).tanh,
-            (string * (1.0 + ampFol * jawariDrive)).fold(-1, 1)
-        ]);
-        sig = string + (jawariAmt * (sigJawari - string));
+        sig    = (string * (1.0 + ampFol * 6)).tanh;
+        sig    = sig + (string.cubed * ampFol * 1.4);
+        sig    = (sig * 0.7) + (string * 0.3);
 
-        // Slow string-to-string sympathy. sympAmt is wet/dry on the
-        // DelayC modulation (default 1.0 = full delay).
-        sigSymp = DelayC.ar(sig, 0.03, SinOsc.kr(0.27, Rand(0, 2pi)).range(0.012, 0.022));
-        sig = sig + (sympAmt * (sigSymp - sig));
+        // Slow string-to-string sympathy
+        sig = DelayC.ar(sig, 0.03, SinOsc.kr(0.27, Rand(0, 2pi)).range(0.012, 0.022));
 
-        // === Y-axis post-synth effect ===
-        // yMode picks what the Y axis drives at the post-synth stage.
-        // hiShelfMode/loShelfMode only matter when yMode=0.
-        //   0 = EQ shelves (default — v1 hi+lo shelf tilt)
-        //   1 = Resonant LPF sweep (Y opens cutoff — sitar/sarod wah)
-        //   2 = Bandpass formant (Y sweeps a peak — oud / vocal)
-        //   3 = Tremolo (Y → AM depth at ~5 Hz — saz / kanun shimmer)
-        //   4 = Pluck-position comb (Y sweeps a short comb — sitar pluck)
-        //   5 = Off (Y has no post-synth effect)
-        hiShelfSig = BHiShelf.ar(sig, hiShelfFreq, 1, brightSm.linlin(0, 1, hiShelfMin, hiShelfMax));
-        hiPeakSig  = BPeakEQ.ar(sig, hiShelfFreq, 1, brightSm.linlin(0, 1, hiShelfMin, hiShelfMax));
-        shelfSig   = Select.ar(hiShelfMode, [hiShelfSig, hiPeakSig, sig]);
-        loShelfSig = BLowShelf.ar(shelfSig, loShelfFreq, 1, brightSm.linlin(0, 1, loShelfMin, loShelfMax));
-        loPeakSig  = BPeakEQ.ar(shelfSig, loShelfFreq, 1, brightSm.linlin(0, 1, loShelfMin, loShelfMax));
-        shelfSig   = Select.ar(loShelfMode, [loShelfSig, loPeakSig, shelfSig]);
-
-        yLpfSig  = RLPF.ar(sig, brightSm.linexp(0, 1, 200, 8000).clip(20, 18000), 0.3);
-        yBpfSig  = BPF.ar(sig, brightSm.linexp(0, 1, 300, 4000).clip(20, 18000), 0.3) * 4;
-        yTremSig = sig * SinOsc.kr(5).range(1 - (brightSm * 0.6), 1);
-        yCombSig = CombC.ar(sig, 0.01, brightSm.linexp(0, 1, 0.0003, 0.008), 0.4);
-
-        sig = Select.ar(yMode, [shelfSig, yLpfSig, yBpfSig, yTremSig, yCombSig, sig]);
+        // Post-synth tilt EQ — audible part of Y.
+        sig = BHiShelf.ar(sig, 1500, 1, brightSm.linlin(0, 1, -24,  24));
+        sig = BLowShelf.ar(sig, 400,  1, brightSm.linlin(0, 1,   8, -8));
 
         // ASR envelope, long release so KS decay isn't truncated
         env = EnvGen.kr(
@@ -139,10 +77,9 @@ s.waitForBoot({
             doneAction: 2
         );
 
-        // Press-driven amp swell. pressSwellLo/Hi replaces the hardcoded
-        // (0.3, 1.5). Default reproduces v1.
-        sig = sig * env * (pressSwellLo + pressSm * (pressSwellHi - pressSwellLo)) * 0.5;
-        sig = Limiter.ar(sig, limiterThresh);
+        // Z → wide amp swell
+        sig = sig * env * (0.3 + pressSm * 1.2) * 0.5;
+        sig = Limiter.ar(sig, 0.95);
 
         Out.ar(0, Pan2.ar(sig, Rand(-0.3, 0.3)));
     }).add;
@@ -213,59 +150,6 @@ s.waitForBoot({
     ~touchMax        = 64;    // Exquis aftertouch caps at ~64/127 in xentool's
                               //   serve TUI. Map 0..~touchMax → 0..1 so full
                               //   press reaches the synth's whole Z range.
-
-    // ── Session logger (deferred-write JSONL) ─────────────────────────────
-    // Toggle ~logEnabled = true to capture every MIDI event + the synth
-    // parameters it produced into supercollider/logs/tanpura_<ts>.jsonl.
-    // 100 ms flush via SystemClock + ShutDown hook for the final batch.
-    ~logEnabled = false;
-    ~logDir = PathName(thisProcess.nowExecutingPath).pathOnly +/+ "logs";
-    ~logQueue = List.new;
-    ~logPath = nil;
-    ~logCount = 0;
-    ~jsonStr = { |s| "\"" ++ s.asString.replace("\\", "\\\\").replace("\"", "\\\"") ++ "\"" };
-    ~jsonNum = { |n| if(n.isInteger) { n.asString } { n.round(0.0001).asString } };
-    ~jsonObj = { |evt|
-        var pairs = List.new;
-        evt.keysValuesDo { |k, v|
-            var vStr = case
-                { v.isNumber } { ~jsonNum.(v) }
-                { v.isNil } { "null" }
-                { v == true } { "true" }
-                { v == false } { "false" }
-                { ~jsonStr.(v) };
-            pairs.add(~jsonStr.(k) ++ ":" ++ vStr);
-        };
-        "{" ++ pairs.asArray.join(",") ++ "}"
-    };
-    ~logEvent = { |evt|
-        if(~logEnabled) {
-            ~logQueue.add(~jsonObj.value(evt));
-            ~logCount = ~logCount + 1;
-        };
-    };
-    ~flushLogQueue = {
-        if(~logEnabled and: { ~logQueue.size > 0 } and: { ~logPath.notNil }) {
-            var batch = ~logQueue.copy;
-            ~logQueue.clear;
-            File.use(~logPath, "a", { |f|
-                batch.do { |line| f.putString(line); f.putString("\n") };
-            });
-        };
-    };
-    if(~logEnabled) {
-        var ts = Date.getDate.format("%Y%m%d-%H%M%S");
-        File.mkdir(~logDir);
-        ~logPath = ~logDir +/+ "tanpura_" ++ ts ++ ".jsonl";
-        "[log] session log: %".format(~logPath).postln;
-        Routine({ loop { ~flushLogQueue.value; 0.1.wait } }).play(SystemClock);
-        Routine({ loop { 5.0.wait; ~logEvent.((t: Main.elapsedTime, kind: \heartbeat, count: ~logCount)) } }).play(SystemClock);
-        ShutDown.add({
-            ~flushLogQueue.value;
-            "[log] flushed final batch on shutdown — % events total".format(~logCount).postln;
-        });
-    };
-    // ── end session logger ────────────────────────────────────────────────
                               //   Tune up/down per controller behaviour.
 
     // ── Session logger ─────────────────────────────────────────────────────
@@ -405,33 +289,12 @@ s.waitForBoot({
     // button. Encoders 1-4 = CC 110-113, buttons 1-4 = CC 114-117, all on
     // MIDI channel 16 (chan index 15).
     ~kparams = (
-        decay:         11,     // KS string decay (sec)         — Encoder 1
-        reverbMix:     0.45,   // FreeVerb2 mix                  — Encoder 2
-        reverbRoom:    0.88,   // FreeVerb2 room                 — Encoder 3
-        masterAmp:     1.0,    // Output gain                    — Encoder 4
-        dampScale:     1.0,    // KS loop-coef multiplier        — Button 2
-        brightScale:   1.0,    // Burst-LPF cutoff multiplier    — Button 3
-        // Studio-controllable extras (see SynthDef args). All defaults
-        // reproduce v1 exactly.
-        droneAmt:      0.25,
-        droneType:     0,      // 0=CombL, 1=Sine+harm, 2=off, 3=Saw, 4=Tri, 5=Beating, 6=Pulse
-        jawariAmt:     0.7,
-        jawariMode:    0,      // 0=tanh+cubed, 1=tanh-only, 2=fold
-        jawariDrive:   6,
-        jawariCubed:   1.4,
-        sympAmt:       1.0,
-        hiShelfFreq:   1500,
-        hiShelfMin:    -24,
-        hiShelfMax:    24,
-        hiShelfMode:   0,      // 0=BHiShelf, 1=BPeakEQ, 2=off
-        loShelfFreq:   400,
-        loShelfMin:    8,
-        loShelfMax:    -8,
-        loShelfMode:   0,      // 0=BLowShelf, 1=BPeakEQ, 2=off
-        yMode:         0,      // 0=shelves, 1=RLPF, 2=BPF, 3=tremolo, 4=comb, 5=off
-        pressSwellLo:  0.3,
-        pressSwellHi:  2.0,
-        limiterThresh: 0.95
+        decay:       11,    // KS string decay (sec)         — Encoder 1
+        reverbMix:   0.45,  // FreeVerb2 mix                  — Encoder 2
+        reverbRoom:  0.88,  // FreeVerb2 room                 — Encoder 3
+        masterAmp:   1.0,   // Output gain                    — Encoder 4
+        dampScale:   1.0,   // KS loop-coef multiplier        — Button 2
+        brightScale: 1.0    // Burst-LPF cutoff multiplier    — Button 3
     );
 
     // Cycle preset banks for the buttons. Index starts at the "classic" slot.
@@ -602,26 +465,7 @@ s.waitForBoot({
                 \press,       0,
                 \decay,       ~kparams.decay,
                 \dampScale,   ~kparams.dampScale,
-                \brightScale, ~kparams.brightScale,
-                \droneAmt,      ~kparams.droneAmt,
-                \droneType,     ~kparams.droneType,
-                \jawariAmt,     ~kparams.jawariAmt,
-                \jawariMode,    ~kparams.jawariMode,
-                \jawariDrive,   ~kparams.jawariDrive,
-                \jawariCubed,   ~kparams.jawariCubed,
-                \sympAmt,       ~kparams.sympAmt,
-                \hiShelfFreq,   ~kparams.hiShelfFreq,
-                \hiShelfMin,    ~kparams.hiShelfMin,
-                \hiShelfMax,    ~kparams.hiShelfMax,
-                \hiShelfMode,   ~kparams.hiShelfMode,
-                \loShelfFreq,   ~kparams.loShelfFreq,
-                \loShelfMin,    ~kparams.loShelfMin,
-                \loShelfMax,    ~kparams.loShelfMax,
-                \loShelfMode,   ~kparams.loShelfMode,
-                \yMode,         ~kparams.yMode,
-                \pressSwellLo,  ~kparams.pressSwellLo,
-                \pressSwellHi,  ~kparams.pressSwellHi,
-                \limiterThresh, ~kparams.limiterThresh
+                \brightScale, ~kparams.brightScale
             ]);
             ~logEvent.((
                 t: Main.elapsedTime, kind: \noteOn,
@@ -757,69 +601,5 @@ s.waitForBoot({
         ));
     };
     // ── end raw-MIDI fallback ─────────────────────────────────────────────
-
-    // ── Studio UI OSC listeners ───────────────────────────────────────────
-    // The tanpura_studio/ web UI sends OSC messages to UDP port 57121.
-    // /tanpura/set <name> <value> updates ~kparams (so future noteOns pick
-    // up the new value) AND pushes the change to every currently-held voice
-    // via Synth.set, for live tweaking on already-sounding notes.
-    //
-    // Reverb / master are separate Synths; their set messages route to
-    // ~mpeReverbSynth / ~mpeMasterSynth instead of voice synths.
-    ~studioPort = 57121;
-    ~studioReplyAddr = NetAddr("127.0.0.1", 57122);
-    thisProcess.openUDPPort(~studioPort);
-
-    ~studioApply = { |name, value|
-        var key = name.asSymbol;
-        var floatVal = value.asFloat;
-        ~kparams[key] = floatVal;
-        case
-            { key == \reverbMix }  { ~mpeReverbSynth.set(\mix, floatVal) }
-            { key == \reverbRoom } { ~mpeReverbSynth.set(\room, floatVal) }
-            { key == \masterAmp }  { ~mpeMasterSynth.set(\amp, floatVal) }
-            { ~mpeVoices.do { |v| v.notNil.if({ v.set(key, floatVal) }) } };
-    };
-
-    OSCdef(\studioSet, { |msg|
-        if(msg.size >= 3) { ~studioApply.value(msg[1], msg[2]) };
-    }, '/tanpura/set', recvPort: ~studioPort);
-
-    OSCdef(\studioBatch, { |msg|
-        var i = 1;
-        while({ i + 1 < msg.size }, {
-            ~studioApply.value(msg[i], msg[i + 1]);
-            i = i + 2;
-        });
-        "[studio] applied batch (% pairs)".format((msg.size - 1) / 2).postln;
-    }, '/tanpura/batch', recvPort: ~studioPort);
-
-    OSCdef(\studioDump, { |msg|
-        var pairs = List.new;
-        ~kparams.keysValuesDo { |k, v|
-            pairs.add(k.asString); pairs.add(v.asFloat);
-        };
-        ~studioReplyAddr.sendMsg('/tanpura/dump.reply', *pairs.asArray);
-        "[studio] dump replied (% params)".format(pairs.size / 2).postln;
-    }, '/tanpura/dump', recvPort: ~studioPort);
-
-    OSCdef(\studioReset, { |msg|
-        var defaults = (
-            decay: 11, reverbMix: 0.45, reverbRoom: 0.88, masterAmp: 1.0,
-            dampScale: 1.0, brightScale: 1.0,
-            droneAmt: 0.25, droneType: 0,
-            jawariAmt: 0.7, jawariMode: 0, jawariDrive: 6, jawariCubed: 1.4,
-            sympAmt: 1.0,
-            hiShelfFreq: 1500, hiShelfMin: -24, hiShelfMax: 24, hiShelfMode: 0,
-            loShelfFreq: 400, loShelfMin: 8, loShelfMax: -8, loShelfMode: 0,
-            yMode: 0,
-            pressSwellLo: 0.3, pressSwellHi: 2.0, limiterThresh: 0.95
-        );
-        defaults.keysValuesDo { |k, v| ~studioApply.value(k.asString, v) };
-        "[studio] reset to defaults".postln;
-    }, '/tanpura/reset', recvPort: ~studioPort);
-
-    "Studio OSC listening on udp://127.0.0.1:%".format(~studioPort).postln;
-    // ── end studio OSC ────────────────────────────────────────────────────
 
 });
