@@ -162,12 +162,20 @@ s.waitForBoot({
     //
     // Writes are deferred: the MIDIdef callbacks only append a tiny JSON
     // string to an in-memory list (microseconds, no I/O), and a separate
-    // Routine flushes the list to disk every 250 ms. Even at hard MPE
-    // event rates (300+/s) this stays well below the audio noise floor.
-    ~logEnabled = false;
+    // Routine on SystemClock flushes the list to disk every 100 ms. Even
+    // at hard MPE event rates (300+/s) this stays well below the audio
+    // noise floor. A ShutDown hook flushes the final batch on exit so
+    // events from the last 100 ms aren't lost when sclang quits.
+    //
+    // Raw-MIDI fallback MIDIdefs (added after the source-filtered ones
+    // below) catch events from ANY MIDI source — even if the xentool
+    // source matcher picked the wrong UID, the log will still contain
+    // every incoming MIDI byte.
+    ~logEnabled = true;
     ~logDir = PathName(thisProcess.nowExecutingPath).pathOnly +/+ "logs";
     ~logQueue = List.new;
     ~logPath = nil;
+    ~logCount = 0;
 
     ~jsonStr = { |s|
         "\"" ++ s.asString.replace("\\", "\\\\").replace("\"", "\\\"") ++ "\""
@@ -194,6 +202,21 @@ s.waitForBoot({
     ~logEvent = { |evt|
         if(~logEnabled) {
             ~logQueue.add(~jsonObj.value(evt));
+            ~logCount = ~logCount + 1;
+        };
+    };
+
+    // Sync flush helper — opens, writes, closes (auto-flushes on close).
+    // Called from the timed Routine and from the ShutDown hook.
+    ~flushLogQueue = {
+        if(~logEnabled and: { ~logQueue.size > 0 } and: { ~logPath.notNil }) {
+            var batch = ~logQueue.copy;
+            ~logQueue.clear;
+            File.use(~logPath, "a", { |f|
+                batch.do { |line|
+                    f.putString(line); f.putString("\n");
+                };
+            });
         };
     };
 
@@ -202,20 +225,29 @@ s.waitForBoot({
         File.mkdir(~logDir);
         ~logPath = ~logDir +/+ "tanpura_" ++ ts ++ ".jsonl";
         "[log] session log: %".format(~logPath).postln;
+        // SystemClock for tighter, more reliable cadence than AppClock.
+        // 100 ms cadence keeps the worst-case lost-on-crash window small.
         Routine({
             loop {
-                if(~logQueue.size > 0) {
-                    var batch = ~logQueue.copy;
-                    ~logQueue.clear;
-                    File.use(~logPath, "a", { |f|
-                        batch.do { |line|
-                            f.putString(line); f.putString($\n);
-                        };
-                    });
-                };
-                0.25.wait;
+                ~flushLogQueue.value;
+                0.1.wait;
             };
-        }).play;
+        }).play(SystemClock);
+        // Heartbeat every 5 s — confirms the logger is alive even when
+        // there's no MIDI traffic, and gives a periodic timestamp anchor.
+        Routine({
+            loop {
+                5.0.wait;
+                ~logEvent.((t: Main.elapsedTime, kind: \heartbeat, count: ~logCount));
+            };
+        }).play(SystemClock);
+        // Final flush on exit — guarantees no events sit in the queue
+        // when sclang quits.
+        ShutDown.add({
+            ~flushLogQueue.value;
+            "[log] flushed final batch on shutdown — % events total → %"
+                .format(~logCount, ~logPath).postln;
+        });
     };
     // ── end session logger ─────────────────────────────────────────────────
 
@@ -503,5 +535,71 @@ s.waitForBoot({
             ).postln;
         };
     }, srcID: ~xentoolUid);
+
+    // ── Raw-MIDI fallback loggers ─────────────────────────────────────────
+    // Belt-and-braces: capture EVERY incoming MIDI event regardless of
+    // source. The structured handlers above only fire for events from
+    // ~xentoolUid; if the source matcher picked the wrong UID (or none
+    // matched at all), those events would be invisible. The raw loggers
+    // record everything with the source UID so a partial-match scenario
+    // is at least diagnosable from the log.
+    //
+    // For events that DO match ~xentoolUid, the log will contain BOTH
+    // the structured entry (e.g. {kind:"cc74", bright:0.62}) AND the
+    // raw entry ({kind:"rawCc", num:74, val:79, srcMatch:true}) — that
+    // redundancy is intentional: structured = synth-side state, raw =
+    // wire-level evidence.
+    if(~logEnabled) {
+        MIDIdef.noteOn(\xtRawNoteOn, { |val, num, chan, src|
+            ~logEvent.((
+                t: Main.elapsedTime, kind: \rawNoteOn,
+                src: src, ch: chan + 1, note: num, vel: val,
+                srcMatch: (src == ~xentoolUid)
+            ));
+        });
+        MIDIdef.noteOff(\xtRawNoteOff, { |val, num, chan, src|
+            ~logEvent.((
+                t: Main.elapsedTime, kind: \rawNoteOff,
+                src: src, ch: chan + 1, note: num, vel: val,
+                srcMatch: (src == ~xentoolUid)
+            ));
+        });
+        MIDIdef.cc(\xtRawCc, { |val, num, chan, src|
+            ~logEvent.((
+                t: Main.elapsedTime, kind: \rawCc,
+                src: src, ch: chan + 1, num: num, val: val,
+                srcMatch: (src == ~xentoolUid)
+            ));
+        });
+        MIDIdef.bend(\xtRawBend, { |val, chan, src|
+            ~logEvent.((
+                t: Main.elapsedTime, kind: \rawBend,
+                src: src, ch: chan + 1, val: val,
+                srcMatch: (src == ~xentoolUid)
+            ));
+        });
+        MIDIdef.touch(\xtRawTouch, { |val, chan, src|
+            ~logEvent.((
+                t: Main.elapsedTime, kind: \rawTouch,
+                src: src, ch: chan + 1, val: val,
+                srcMatch: (src == ~xentoolUid)
+            ));
+        });
+        MIDIdef.polytouch(\xtRawPolyTouch, { |val, num, chan, src|
+            ~logEvent.((
+                t: Main.elapsedTime, kind: \rawPolyTouch,
+                src: src, ch: chan + 1, note: num, val: val,
+                srcMatch: (src == ~xentoolUid)
+            ));
+        });
+        ~logEvent.((
+            t: Main.elapsedTime, kind: \loggerStart,
+            xentoolUid: ~xentoolUid,
+            sourcesAvailable: MIDIClient.sources.collect { |s|
+                "uid=" ++ s.uid ++ " device=\"" ++ s.device ++ "\" port=\"" ++ s.name ++ "\""
+            }.asArray
+        ));
+    };
+    // ── end raw-MIDI fallback ─────────────────────────────────────────────
 
 });
