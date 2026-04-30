@@ -1,70 +1,103 @@
 # xentool
 
-`xentool` is a Rust CLI for two microtonal MIDI controllers, treated as
-co-equal backends:
+A microtonal-tuning bridge for two expressive MIDI controllers:
 
-- **Exquis backend** — Intuitive Instruments Exquis MPE controller (61 hex pads
-  per board, multi-board), driven over USB MIDI / SysEx.
-- **Wooting backend** — Wooting analog keyboards (xenwooting use case),
-  driven via the Wooting Analog and RGB SDKs at runtime.
+- **Exquis** — Intuitive Instruments' 61-pad MPE hex grid (single or multi-board).
+- **Wooting** — analog gaming keyboards repurposed as a velocity- and
+  pressure-sensitive isomorphic controller (the [xenwooting](https://github.com/mcleinn/xenwooting)
+  use case).
 
-Targets Windows and Linux including Ubuntu-class environments and Raspberry
-Pi setups such as Patchbox OS. Exquis support targets the official 2025
-Developer Mode MIDI specification (firmware `3.0.0`+); Wooting support is
-delivered through the Wooting Analog and RGB SDKs (loaded at runtime — see
-`scripts/install-wooting-sdks.*`).
+Plug the controller into your computer, point xentool at a layout file
+(`.xtn` or `.wtn`), and any MIDI synth on the other end plays in any
+EDO you like — 12, 24, 31, 53, your choice. xentool handles the
+microtonal retuning, LED colours, expressive MPE / aftertouch routing,
+and the live overview.
 
-## File-extension routing
+It runs on Windows, Linux (including Patchbox OS / Raspberry Pi), and
+macOS.
 
-A single subcommand handles both backends — the file extension picks the
-backend:
+---
 
-| Extension | Backend | Layout format          |
-| --------- | ------- | ---------------------- |
-| `.xtn`    | Exquis  | xentool-native (INI)   |
-| `.wtn`    | Wooting | xenwooting (INI)       |
-| `.ltn`    | import  | Lumatone (read-only via `edit` import) |
+## Features
 
-So `xentool serve foo.xtn` runs the Exquis serve loop and `xentool serve
-foo.wtn` runs the Wooting serve loop. Same for `load` / `new`.
+**Play microtonally with any synth**
 
-## Features at a glance
+- Pitch-bend retuning for the Exquis (works with any MPE synth).
+- MTS-ESP master for the Wooting (works with any MTS-ESP-aware synth
+  — Pianoteq, amsynth_multichannel, …).
+- Stays in stock 12-TET if you load a 12-EDO layout — no quirks.
 
-**Both backends**
-- `xentool list` enumerates connected Exquis MIDI ports and Wooting keyboards
-- `xentool edit <file>` opens a web-based visual editor for `.xtn` / `.wtn` / `.ltn`
-- `xentool geometries` / `xentool geometry <name>` describe / render hex-grid layouts
-- Multi-board, microtonal tuning via MTS-ESP master
-- Persistent "last layout" memory across runs (`settings.json`)
-- Optional **Live HUD** during `serve` — text-only browser view of currently-played
-  notes / chord names with auto-fit Bravura glyphs (see [Live HUD](#live-hud))
+**Live overview as you play**
 
-**Exquis-only**
-- `xentool midi` — live MPE monitor (terminal UI showing X/Y/Z + event log)
-- `xentool dev on|off` — explicit developer mode control
-- `xentool pads clear|fill|test`, `xentool pad <pad> <color>` — MPE-safe LED control via the snapshot technique
-- `xentool control <name> <color>` — non-pad LED control (encoders, buttons, slider)
-- `xentool highlight <note>` — note highlighting via channel 1
-- `xentool serve <file.xtn>` — pitch-bend retuning *or* MTS-ESP
-- multi-Exquis support via logical board names in `devices.json`
-- friendly names for documented Exquis buttons and encoders
-- automatic JSONL logging during `xentool midi`
+- **Live HUD** in the browser: notes / pitch-classes / intervals /
+  chord names with proper Bravura microtonal accidentals — auto-fits
+  the screen, LAN-reachable from a phone or tablet, four taps cycle
+  the views.
+- Bundled chord database with 844 chord templates from Manuel Op de
+  Coul's Scala project.
 
-**Wooting-only**
-- `xentool serve <file.wtn>` — 1 kHz analog-to-MIDI with MTS-ESP, terminal UI
-- `xentool load <file.wtn>` — paint per-key LEDs from a `.wtn` layout
-- `xentool new <file.wtn>` — create a blank `.wtn` for a given EDO
-- live in-keyboard controls during `serve`: octave hold, aftertouch mode, velocity profile, pitch bend, layout cycle (see [Wooting serve](#serve--analog-to-midi-with-mts-esp))
+**Touchscreen studio for the bundled synths**
 
-## Installation
+- **Tanpura studio** (Exquis backend, port 9100) tweaks the included
+  microtonal tanpura: drone, jawari, EQ, Y-axis effect (resonant LPF
+  wah, formant, tremolo, comb), reverb, master.
+- **Piano studio** (Wooting backend, port 9101) tweaks the included
+  piano patch: voice mode (piano / Hammond organ / Rhodes EP), ADSR,
+  three-string detune, drone, Y-axis effect (LPF / tremolo / Leslie
+  / chorus / vibrato), reverb.
+- Both UIs share the same shape: big sliders, accordion sections,
+  Save / Load presets, "Make default" so your sound boots that way
+  next time, "Factory reset" to roll back. Fast and finger-friendly.
+
+**Layouts**
+
+- Visual web editor for `.xtn` / `.wtn` / `.ltn` (Lumatone) files —
+  paint pads, set tunings, import other layouts, rotate, translate,
+  save.
+- Multi-board for Exquis (up to 4 boards in one stack).
+- Per-pad colours stored alongside the tuning.
+
+**Optional bundled sounds** under `supercollider/`:
+
+- Microtonal tanpura SynthDef (Exquis MPE), with all the Indian-string
+  expressivity the studio UI exposes.
+- Multi-voice piano / organ / Rhodes EP SynthDef (Wooting),
+  pitch-derived from the layout's EDO so it stays in tune without
+  needing an MTS-ESP client.
+
+---
+
+## How it fits together
+
+A typical Exquis setup — controller → xentool → virtual MIDI port →
+your synth, with the optional Live HUD, xenharm sidecar, bundled
+SuperCollider tanpura, and tanpura studio touchscreen UI:
+
+![Exquis architecture](docs/architecture-exquis.svg)
+
+The Wooting setup is the same shape, but the analog keys go through
+a 1 kHz polling loop and tuning is published over MTS-ESP plus an
+OSC tuning broadcast to SC. The bundled piano patch and piano studio
+sit in the same place the tanpura ones do for Exquis:
+
+![Wooting architecture](docs/architecture-wooting.svg)
+
+You don't need every box — the Live HUD, xenharm, SuperCollider, and
+the studio UI are all optional. Even the bundled SC patches are
+optional: any MPE / MTS-ESP synth on the other side of the virtual
+MIDI port works.
+
+---
+
+## Install
+
+Pick the install path that matches your OS, then jump to
+[Quick start](#quick-start).
 
 ### Linux (Patchbox OS, Raspberry Pi OS, Ubuntu on Pi 4/5)
 
-Pick the script that matches your hardware. Each one is **interactive** —
-it shows the plan up front, prompts before installing system packages, and
-asks separately whether you want the [xenharm sidecar](#optional-xenharm-note-glyphs)
-(microtonal note glyphs) and the optional [bundled SuperCollider patch](#optional-bundled-supercollider-patches)
-(quick-test synth — replace with any MPE / MTS-ESP synth of your choice).
+Each script is **interactive**: it shows the plan up front, prompts
+before each component, and only installs what you accept.
 
 ```bash
 # Exquis MPE controller:
@@ -74,37 +107,26 @@ bash scripts/install-linux-exquis.sh
 bash scripts/install-linux-wooting.sh
 ```
 
-Either script will:
+Either script will offer to install:
 
-1. `apt install` the build prerequisites (build-essential, ALSA + USB dev
-   headers, `tmux` for the TUI service, etc.).
-2. Install Rust via rustup if `cargo` isn't on `PATH` already.
-3. Build and install `xentool` to `~/.cargo/bin/`.
-4. (Wooting only) install the Wooting Analog + RGB SDKs to `/usr/local/lib`.
-5. (Optional, prompted) set up the **xenharm** Python sidecar in a per-user
-   venv (`~/.local/share/xentool/venv`) — required only for Bravura SMuFL
-   note glyphs in the HUD; without it, the HUD falls back to numeric
-   labels.
-6. (Optional, prompted) install **SuperCollider** + `sc3-plugins` and the
-   matching bundled patch — `supercollider/mpe_tanpura_xentool.scd` for
-   the Exquis MPE flow, `supercollider/midi_piano_xentool.scd` for the
-   Wooting classic-MIDI flow.
-7. Write `systemd --user` units (`xenharm`, `xentool`, optionally
-   `xentool-supercollider`), enable user-linger, and start them in the
-   right order.
+1. Build prerequisites and Rust, then build `xentool` to `~/.cargo/bin/`.
+2. (Wooting only) the Wooting Analog + RGB SDKs.
+3. The **xenharm** Python sidecar (microtonal note glyphs in the HUD).
+4. **SuperCollider** with the matching bundled patch.
+5. The matching **studio web UI** (tanpura or piano).
+6. `systemd --user` units (`xenharm`, `xentool`, optionally
+   `xentool-supercollider`, optionally `xentool-studio`) so it all
+   starts on boot.
 
 After install:
 
-| What you want to do                             | Command                                          |
-|-------------------------------------------------|--------------------------------------------------|
-| Open the **Live HUD**                           | <http://localhost:9099/> (also LAN-reachable)    |
-| Attach to xentool's **TUI** (detach: `Ctrl-b d`)| `xentool-tui` (`~/.local/bin/xentool-tui`)       |
-| Tail logs                                       | `journalctl --user -u xentool -f`                |
-| Manage the service                              | `systemctl --user {status,restart,stop} xentool` |
-
-The xentool serve loop runs under `tmux` (socket label `xentool`) so the
-TUI lives in a real pty even though it's a background service. `xentool-tui`
-is just a one-line wrapper around `tmux -L xentool attach -t xentool`.
+| What you want to do                              | Command                                              |
+|--------------------------------------------------|------------------------------------------------------|
+| Open the **Live HUD**                            | <http://localhost:9099/>                             |
+| Open the **studio web UI** (if installed)        | <http://localhost:9100/> (Exquis) · <http://localhost:9101/> (Wooting) |
+| Attach to xentool's **TUI** (detach: `Ctrl-b d`) | `xentool-tui`                                        |
+| Tail logs                                        | `journalctl --user -u xentool -f`                    |
+| Manage the service                               | `systemctl --user {status,restart,stop} xentool`     |
 
 ### Windows
 
@@ -116,101 +138,42 @@ cargo install --path .
 powershell -ExecutionPolicy Bypass -File scripts\install-wooting-sdks.ps1
 ```
 
-Or run `scripts\install.bat` for the equivalent. xentool is a CLI on Windows
-— there are no systemd units; start it from a terminal:
+Or run `scripts\install.bat` for the equivalent.
+
+#### One-click full stack
+
+To bring up xentool, the xenharm sidecar, the matching SuperCollider
+synth, and the matching studio web UI in **one** Windows Terminal
+window — four labelled tabs, started with the right delays — pick
+the script for your hardware and double-click:
+
+| Hardware | Script                          | Default layout    | Bundled sound + studio                    |
+|----------|---------------------------------|-------------------|-------------------------------------------|
+| Exquis   | `scripts\run-all-exquis.bat`    | `xtn\edo31.xtn`   | tanpura + tanpura studio (port 9100)      |
+| Wooting  | `scripts\run-all-wooting.bat`   | `wtn\edo31.wtn`   | piano + piano studio (port 9101)          |
+
+Falls back to separate cmd windows if Windows Terminal isn't installed.
+Override the layout or SC patch by setting `LAYOUT` / `SC_SCRIPT`
+before launching:
 
 ```powershell
-xentool serve --hud
+set LAYOUT=C:\Dev-Free\xentool\xtn\edo24.xtn
+scripts\run-all-exquis.bat
 ```
 
-#### One-click full stack (Windows Terminal)
-
-To bring up xentool, the xenharm sidecar and the matching SuperCollider
-synth in **one** Windows Terminal window — three labelled tabs in
-xentool / xenharm / supercollider order, started with the right delays
-between them — pick the script for your hardware and double-click:
-
-| Hardware | Script                          | Default layout    | SC patch                       |
-|----------|---------------------------------|-------------------|--------------------------------|
-| Exquis   | `scripts\run-all-exquis.bat`    | `xtn\edo31.xtn`   | `mpe_tanpura_xentool.scd`      |
-| Wooting  | `scripts\run-all-wooting.bat`   | `wtn\edo31.wtn`   | `midi_piano_xentool.scd`       |
-
-The two SC patches differ on purpose: the Exquis pads emit MPE
-(per-note pitch bend, CC74, channel pressure), so the Exquis stack
-runs the **MPE tanpura** sketch that maps X/Y/Z onto string-pluck
-parameters. The Wooting keys emit classic 12/N-EDO MIDI on Lumatone-
-style channel-stripes, so the Wooting stack runs the **classic-MIDI
-piano** sketch instead.
-
-Each script:
-
-1. Always opens a **new** Windows Terminal window (your existing wt
-   sessions are untouched).
-2. Locates `wt.exe` via PATH → `%LOCALAPPDATA%\Microsoft\WindowsApps`
-   → `%ProgramFiles%\WindowsApps\Microsoft.WindowsTerminal_*` →
-   PowerShell `Get-Command` (so it works even when the App Execution
-   Alias isn't on `cmd`'s PATH). If wt isn't found anywhere, falls
-   back to three separate `cmd.exe` windows.
-3. Starts xenharm immediately, xentool ~2 s later (so the HUD's
-   `/health` probe sees a bound xenharm), supercollider ~5 s later
-   (so `MIDIClient.init` sees xentool's MIDI port and the OSC strip
-   doesn't fire into a closed UDP socket).
-4. Pins the layout and the SC patch up front so xentool loads the
-   right backend regardless of what `settings.json` last used. Set
-   `LAYOUT` and / or `SC_SCRIPT` before calling either script to
-   override:
-
-   ```powershell
-   set LAYOUT=C:\Dev-Free\xentool\xtn\edo24.xtn
-   set SC_SCRIPT=mpe_tanpura_xentool.scd
-   scripts\run-all-exquis.bat
-   ```
-
-5. The Wooting frontend additionally sets
-   `XENTOOL_EXTRA_ARGS=--tune-supercollider` (see below). The Exquis
-   frontend does not — Exquis routes through MPE pitch-bend retuning,
-   so SC's standard MIDI handling already produces the correct
-   microtonal pitch.
-
-To stop a single subsystem, focus its tab and press Ctrl-C (or close
-the tab). To stop everything, close the Windows Terminal window.
-
-#### `--tune-supercollider` (tuning broadcast for SC)
-
-SuperCollider doesn't ship with an MTS-ESP client, so on the **Wooting**
-flow (where xentool is the MTS-ESP master and SC has no way to read the
-table) xentool needs another channel to tell SC the active EDO + pitch
-offset. With `--tune-supercollider` set, xentool emits
-
-```
-/xentool/tuning <edo:int> <pitch_offset:int> <layout_id:str>
-```
-
-over UDP to `127.0.0.1:57120` (sclang's default OSC port) at startup,
-on every layout cycle, and every 3 s as a resync. The bundled
-`supercollider/midi_piano_xentool.scd` registers an
-`OSCdef('/xentool/tuning', …)` that updates `~tuningEdo` /
-`~pitchOffset`, so a tuning swap reaches the synth without restarting
-sclang.
-
-The flag is **off** by default, **on** for `run-all-wooting.bat`, and
-**not used** by `run-all-exquis.bat` (the MPE flow doesn't need it).
-To override the Wooting orchestrator's default — for example to test
-without the broadcast — set `XENTOOL_EXTRA_ARGS` to an empty string
-before calling:
-
-```powershell
-set XENTOOL_EXTRA_ARGS=
-scripts\run-all-wooting.bat
-```
+To stop one subsystem, focus its tab and press Ctrl-C; to stop
+everything, close the window.
 
 ### macOS
 
-`cargo install --path .` builds xentool. The Wooting backend currently has
-no install script for macOS; build the SDKs from upstream sources if you
-need them.
+```bash
+cargo install --path .
+```
 
-## Build (from source)
+The Wooting SDKs aren't auto-installed on macOS — build them from
+upstream sources if you need the Wooting backend.
+
+### Build from source (any platform)
 
 ```bash
 cargo build           # debug
@@ -220,374 +183,254 @@ cargo test            # full test suite
 
 ---
 
-## Commands shared between backends
+## Quick start
 
-### Help
+1. Plug in your Exquis or Wooting.
+2. Pick a layout from `xtn/` or `wtn/` (e.g. `edo31.xtn`) and run:
+   ```
+   xentool serve xtn/edo31.xtn --hud
+   ```
+3. Point your synth at xentool's MIDI output (see
+   [Synth compatibility](#synth-compatibility)).
+4. Open <http://localhost:9099/> for the Live HUD.
+5. (Optional) open <http://localhost:9100/> (Exquis) or
+   <http://localhost:9101/> (Wooting) for the touchscreen studio if
+   you're using the bundled SC patch.
+6. Play.
 
-```powershell
-xentool help
-xentool help midi
-xentool --help
-```
+---
 
-### List devices
+## Live HUD
 
-```powershell
-xentool list
-```
+Add `--hud` to any `xentool serve` command. Starts a small HTTP server
+(default `0.0.0.0:9099` so phones and tablets on the LAN can connect)
+and a browser-based view that shows currently-played notes in proper
+musical notation with the Bravura SMuFL font. Auto-fits the viewport,
+dark, no chrome.
 
-Reports both connected Exquis MIDI ports and Wooting keyboards (when the
-SDK is installed). Exquis example output:
+Tap or click anywhere to cycle four views:
 
-```text
-[1] Exquis
-  id: usb:2fe3:0100:bus-001/ports-3/addr-002
-  usb: 2fe3:0100
-  manufacturer: Intuitive Instruments
-  location: bus-001/ports-3/addr-002
-  firmware: unavailable
-  midi-in: Exquis
-  midi-out: Exquis
-```
+| View        | Shows                                                                       |
+|-------------|------------------------------------------------------------------------------|
+| `notes`     | pressed pitches as Bravura glyphs (with up/down arrow microtonal accidentals) |
+| `pcs`       | one entry per pitch class (`14₃-21₃-3₄`)                                     |
+| `delta`     | root pitch + `+N` step offsets to the other notes                            |
+| `intervals` | chord-name candidates from the bundled Scala chord database                  |
 
-USB metadata reported (when available): stable unique ID (serial-based or
-VID:PID + bus/port location), vendor/product IDs, manufacturer, serial,
-bus/port location, firmware version (only when a documented host query
-exists; currently `unavailable`).
+For full microtonal note names you also need the **xenharm** sidecar
+(installed automatically on Linux when prompted; manual setup on
+Windows/macOS — see [`xenharm_service/`](xenharm_service/)). Without
+it, the HUD falls back to numeric labels.
 
-### Edit — visual layout editor
+Tap a single note glyph to cycle its enharmonic spellings (e.g.
+sharp ↔ flat). Tap empty space to cycle the four views.
 
-```powershell
-xentool edit xtn/edo31.xtn
-xentool edit wtn/edo31.wtn
-xentool edit xtn/edo31.xtn --port 8088 --no-open
-```
+---
 
-Opens a web-based editor in your default browser. Each connected/configured
-board is rendered as a hex panel (Exquis: 61 pads in 6-5-6-5-…-6 layout;
-Wooting: a 4×14 keyboard region) and you can edit Key / Chan / Color in
-the sidebar. Save writes back to the file.
+## Studio touchscreen web UI
 
-Import: click Import, pick a `.ltn` (Lumatone), `.wtn` (xenwooting), or
-another `.xtn`. Use arrow keys to translate, `R` to rotate 60° around the
-hovered pad. Enter applies the overlay; Esc cancels. Colors are preserved
-verbatim through the round-trip (no 8-bit ↔ 7-bit lossy scaling during edit).
+Each backend ships with a small web UI that exposes the bundled
+SuperCollider synth's parameters as touch-friendly sliders and
+dropdowns, with live updates to held notes via OSC.
 
-### Live HUD
+| Backend  | UI                  | URL                       | Synth target                  |
+|----------|---------------------|---------------------------|-------------------------------|
+| Exquis   | **tanpura studio**  | <http://localhost:9100/>  | `mpe_tanpura_xentool.scd`     |
+| Wooting  | **piano studio**    | <http://localhost:9101/>  | `midi_piano_xentool.scd`      |
 
-```powershell
-xentool serve xtn/edo31.xtn --hud
-xentool serve wtn/edo31.wtn --hud --hud-port 9099
-```
+Both UIs share a layout: accordion sections of sliders / dropdowns,
+big finger-sized targets, and four header buttons:
 
-Opt-in via `--hud`. Starts a small HTTP server (default `0.0.0.0:9099` so
-phones / tablets on the LAN can connect) and a browser-based view that shows
-**currently-played notes in text form** with a special musical font (Bravura,
-SMuFL). The page is dark, auto-fits to fill the viewport, and shows tiny
-status corners (layout name, EDO, threshold, aftertouch mode, octave shift).
-Tap (or click) anywhere to cycle four views:
+- **Save preset** — writes a timestamped snapshot to `presets/`.
+- **Load** — pick a saved preset; values apply atomically.
+- **Make default** — promotes the current state to `_default.json`.
+  On next startup, those values load automatically. **Reset** also
+  goes there.
+- **Factory reset** — deletes `_default.json` and rolls back to the
+  hardcoded patch defaults.
 
-| view        | shows                                                                      |
-|-------------|-----------------------------------------------------------------------------|
-| `notes`     | pressed pitches as Bravura glyphs (xenharm) or letter+octave / `o<oct>p<pc>` |
-| `pcs`       | one entry per pitch class as `<pc>/<oct>` (e.g. `14/3-21/3-3/4`)            |
-| `delta`     | root pitch (with `pc/oct`) + `+N` step offsets to the other notes          |
-| `intervals` | chord-name candidates from the bundled Scala `chordnam.par` (844 chords)    |
+Slider moves are pushed live to every currently-held voice, so you
+can hold a chord and reshape its sound in real time.
 
-Both backends feed the same wire shape; the page renders identically for
-Exquis and Wooting. The hot loops never block on the HUD: snapshots are
-published through a lock-free atomic pointer swap, JSON encoding happens on
-the SSE handler thread.
+**What the tanpura studio exposes:** decay / damp / brightness for
+the strings, drone amount + type (CombL feedback / Sine + harmonics
+/ Saw / Triangle / Beating sines / Pulse), jawari nonlinearity (mix
++ drive + mode), sympathy delay, Y-axis effect (EQ shelves /
+resonant LPF wah / bandpass formant / tremolo / pluck-position
+comb), press swell range, limiter, reverb, master.
 
-#### Optional: xenharm note glyphs
+**What the piano studio exposes:** voice (piano / Hammond organ /
+Rhodes EP), ADSR, piano string detune (0 = unison → 0.01 ≈
+honky-tonk), hammer hardness, drone amount + type, Y-axis effect
+(off / LPF / tremolo / Leslie / chorus / vibrato), Leslie speeds,
+reverb, master.
 
-For full microtonal note names with Bravura accidentals (up/down arrow
-quartertone glyphs), the bundled `xenharm_service` Python sidecar maps each
-absolute pitch to a Unicode SMuFL codepoint:
+The Linux installer offers to set up the matching studio as a
+systemd user service. The Windows `run-all-*.bat` launchers open it
+as the 4th tab in their stack.
 
-- **Linux:** the `install-linux-{exquis,wooting}.sh` scripts offer to
-  install xenharm in a per-user venv and register a `systemd --user`
-  service (`xenharm.service`). Nothing else to do — xentool's HUD probes
-  `http://127.0.0.1:3199/health` at startup and uses it automatically.
-- **Manual / other platforms:**
+---
 
-  ```bash
-  cd xenharm_service
-  python3.12 -m venv .venv && .venv/bin/pip install xenharmlib
-  .venv/bin/python server.py --host 127.0.0.1 --port 3199
-  ```
-
-If the probe fails, the HUD silently falls back to numeric / letter labels.
-Override the URL with `--xenharm-url`.
-
-### Synth compatibility
+## Synth compatibility
 
 xentool is **synth-agnostic** — it produces standard MIDI on a virtual
-MIDI port (loopMIDI on Windows, snd-seq Midi-Through on Linux), and any
-synth that reads from that port can be the audio engine. The two
-backends have different microtonality conventions, which determine
-what kind of synth fits:
+MIDI port (loopMIDI on Windows, snd-seq on Linux). Any synth that
+reads from that port can be the audio engine.
 
-| Backend  | Target synth                  | Synth pitch-bend range | How microtones reach the synth                                          |
-|----------|-------------------------------|-----------------------:|--------------------------------------------------------------------------|
-| Exquis   | any **MPE-capable** synth     | **±16 semitones** *(must match xentool's `--pb-range`)* | per-note pitch-bend injected before each note-on |
-| Wooting  | any **MTS-ESP master client with multichannel tuning support** | **user's choice** (e.g. ±2 for piano-style bend keys) | xentool registers as the MTS-ESP master and pushes a 16×128 multichannel tuning table |
+| Backend  | Target synth                                                | Synth pitch-bend range                                 | How microtones reach the synth                                                          |
+|----------|-------------------------------------------------------------|-------------------------------------------------------:|------------------------------------------------------------------------------------------|
+| Exquis   | any **MPE-capable** synth                                   | **±16 semitones** *(must match `--pb-range`)*          | per-note pitch-bend injected before each note-on                                         |
+| Wooting  | any **MTS-ESP master client with multichannel tuning**      | user's choice (e.g. ±2 for piano, ±12 for organ)       | xentool registers as MTS-ESP master and pushes a 16×128 multichannel tuning table        |
 
-For the **Exquis** flow, point any MPE synth (Pianoteq, Equator2, MPE-aware
-Surge XT, amsynth_multichannel, …) at xentool's MIDI output and set its
-**per-note pitch-bend range to ±16 semitones** to match xentool's
-`--pb-range 16` default. xentool's microtonal retunes ride on the bend
-channel, so the synth-side range must match exactly or the EDO
-quantisation drifts.
+For the **Exquis** flow, point any MPE synth (Pianoteq, Equator2,
+MPE-aware Surge XT, amsynth_multichannel, …) at xentool's MIDI output
+and set its **per-note pitch-bend range to ±16 semitones** to match
+the default. xentool's microtonal retunes ride on the bend channel,
+so the synth-side range must match exactly.
 
 For the **Wooting** flow, point any MTS-ESP master client *with
-multichannel tuning support* (amsynth_multichannel, Pianoteq, …) at
-xentool's MIDI output. xentool registers as the MTS-ESP master and
-publishes a 16×128 multichannel tuning table over the libMTS
-shared-memory bus — one full 128-note table per MIDI channel, because
-the Lumatone-style channel-stripes Wooting emits assign different
-absolute pitches to the same MIDI note number on different channels,
-and a global single-channel table would collide. Synths that only
-support single-channel MTS-ESP will read the wrong frequencies.
+multichannel tuning support* at xentool's output. Single-channel
+MTS-ESP-only synths will read the wrong frequencies because the
+Lumatone-style channel-stripes assign different pitches to the same
+MIDI note number on different channels.
 
-The bend keys (Left Ctrl / Left Alt) emit raw 14-bit MIDI pitch-bend
-that xentool relays without any scaling, so **the synth's pitch-bend
-range is your choice** — set it to ±2 for a pianistic feel, ±12 for
-organ-style portamento, or anything else that matches your playing
-style. The bundled SC piano patch defaults to ±2.
+If microtones aren't desired, just pick `xtn/edo12.xtn` /
+`wtn/edo12.wtn` — the synth then receives ordinary chromatic MIDI.
 
-Either flow stays in stock 12-TET if microtones aren't desired — just
-pick a layout (`xtn/edo12.xtn` / `wtn/edo12.wtn`) and the synth produces
-ordinary chromatic MIDI.
+### Optional bundled SuperCollider sounds
 
-#### Optional: bundled SuperCollider patches
+For quick testing without configuring an external synth:
 
-For quick testing without configuring an external synth, the repo
-ships two SuperCollider sketches under `supercollider/`. They're meant
-as **optional convenience** — every feature also works with any
-third-party MPE / MTS-ESP synth as described above.
+| Patch                      | Backend  | What it is                                                                                |
+|----------------------------|----------|-------------------------------------------------------------------------------------------|
+| `mpe_tanpura_xentool.scd`  | Exquis   | MPE microtonal tanpura · X/Y/Z → KS pluck params                                          |
+| `midi_piano_xentool.scd`   | Wooting  | Multi-voice piano / organ / Rhodes EP · re-derives Hz from the layout's EDO (no MTS-ESP)  |
 
-| Patch                          | Backend  | What it is                                        |
-|--------------------------------|----------|---------------------------------------------------|
-| `mpe_tanpura_xentool.scd`      | Exquis   | MPE-aware microtonal tanpura · X/Y/Z → KS pluck params · `~mpeBendRange = 16` |
-| `midi_piano_xentool.scd`       | Wooting  | Classic-MIDI piano · re-derives Hz from `(chan-1)·edo + note` (no MTS-ESP client needed) · `~bendRange = 2` |
+Both can be tweaked live via their studios (above). Both also push
+parameter changes back to the HUD via OSC, so encoder turns and
+button presses appear as a sticky parameter strip + brief event log
+on the right edge of the HUD page.
 
-Both push parameter changes back to the HUD via OSC — encoder turns
-and button presses appear as a sticky parameter strip plus a brief
-event log on the right edge of the HUD page.
+---
 
-- **Windows:** `scripts\run-all-{exquis,wooting}.bat` already starts
-  the right patch; for a single-window manual launch use
-  `scripts\start-supercollider.bat <patch>.scd`.
-- **Linux:** the install scripts (`scripts/install-linux-{exquis,wooting}.sh`)
-  prompt to set up `xentool-supercollider.service` with the matching
-  patch.
-- **Manual / other platforms:** `sclang supercollider/<patch>.scd`
-  after xentool is already running.
+## Layout editor
 
-##### Pushing your own params from any OSC client
-
-xentool listens for OSC on UDP `9000` by default (override with
-`--osc-port`). Send `/xentool/param/<group>/<name> <value> [<unit>]` for a
-sticky parameter or `/xentool/event <text>` for a one-off log line.
-Example from SuperCollider — applies equally to any OSC sender (Max,
-Pd, ChucK, a Python script, …):
-
-```sclang
-~hud = NetAddr("127.0.0.1", 9000);
-~hud.sendMsg("/xentool/param/filter/cutoff", 880.0, "Hz");
-~hud.sendMsg("/xentool/event", "preset → bright");
 ```
+xentool edit xtn/edo31.xtn
+xentool edit wtn/edo31.wtn
+```
+
+Opens a web-based editor in your default browser. Each connected /
+configured board renders as a hex panel; Key / Chan / Colour are
+edited in the sidebar. Save writes back to the file.
+
+Import: pick a `.ltn` (Lumatone), `.wtn` (xenwooting), or another
+`.xtn`. Use arrow keys to translate, `R` to rotate 60° around the
+hovered pad. Enter applies the overlay; Esc cancels. Colours
+round-trip losslessly.
+
+---
+
+## File-extension routing
+
+A single `xentool` binary handles both backends — the file extension
+picks the backend:
+
+| Extension | Backend | Layout format              |
+| --------- | ------- | -------------------------- |
+| `.xtn`    | Exquis  | xentool-native (INI)       |
+| `.wtn`    | Wooting | xenwooting (INI)           |
+| `.ltn`    | import  | Lumatone (read-only via `edit`) |
+
+So `xentool serve foo.xtn` runs the Exquis serve loop and `xentool
+serve foo.wtn` runs the Wooting serve loop. Same for `load` / `new`.
 
 ---
 
 ## Exquis backend
 
-### Monitor MIDI / MPE
+### `xentool serve <file.xtn>` — microtonal tuning server
 
-```powershell
-xentool midi
-xentool midi --mode stream
-xentool midi --mode stream --mpe-only
-xentool midi --mode raw --log-raw
-xentool midi --device 1 --log-file C:\temp\xentool-session.jsonl
 ```
-
-Default mode is `hybrid`: top panel shows active touches with live `X/Y/Z`,
-bottom panel shows a compact event stream, press `q` to quit. The `stream`
-mode prints discrete events line by line; `raw` prints raw MIDI bytes.
-
-`--mpe-only` filters the output down to MPE note and `X/Y/Z` events
-(`note_on`, `note_off`, `x` as pitch bend, `y` as `CC74`, `z` as channel
-pressure or poly aftertouch).
-
-### Developer mode
-
-```powershell
-xentool dev on
-xentool dev on --zone pads,encoders,slider,up-down,other-buttons
-xentool dev off
-```
-
-Default `dev on` zones are pads, encoders, slider, up/down buttons, and
-other buttons — intentionally avoids taking over the settings/sound buttons.
-
-### Pad colors
-
-```powershell
-xentool pads fill amber
-xentool pads fill 255,32,0 --device 1
-xentool pads clear
-xentool pads test
-xentool pad 17 blue
-xentool pad 17 0,127,0 --device 2
-```
-
-All color commands use the MPE-safe **snapshot approach** by default — MPE
-pitch bend, CC74, and aftertouch continue to work normally while custom
-colors are displayed. Pass `--legacy` to fall back to direct dev-mode pad
-takeover (full LED control but no MPE):
-
-```powershell
-xentool pads fill amber --legacy
-xentool pad 17 blue --legacy
-```
-
-### Load .xtn layout
-
-```powershell
-xentool load my_layout.xtn
-```
-
-Loads an `.xtn` layout file (INI-style, compatible with xenwooting `.wtn` /
-Lumatone `.ltn`) and applies per-pad colors to connected Exquis boards. Each
-`[BoardN]` section maps to a logical device name configured in
-`devices.json`. If only one board section and one Exquis is connected,
-auto-matches without config.
-
-Example `.xtn` file:
-
-```ini
-Edo=31
-PitchOffset=0
-
-[Board0]
-Key_0=0
-Chan_0=1
-Col_0=FFDD00
-Key_1=1
-Chan_1=1
-Col_1=7981EC
-
-[Board1]
-Key_0=61
-Chan_0=2
-Col_0=E26ABC
-```
-
-- `Edo=N` — steps per octave (e.g. 31 for 31-EDO). Required for `serve` tuning.
-- `PitchOffset=M` — optional pitch offset in EDO steps (default 0)
-- `Key_N` — virtual MIDI note for frequency calculation (not sent to Exquis)
-- `Chan_N` — virtual MIDI channel for frequency calculation (not sent to Exquis)
-- `Col_N` — hex RGB color (8-bit, scaled to 7-bit for Exquis)
-
-`Key_N` and `Chan_N` encode the abstract pitch in the EDO tuning system. The
-`serve` command uses them to calculate microtonal frequencies:
-`virtual_pitch = (Chan - 1) * Edo + Key + PitchOffset`. These values are
-never sent to the Exquis — pads always send their pad ID as the MIDI note.
-
-### Serve — microtonal tuning server
-
-```powershell
 xentool serve xtn/edo31.xtn
 xentool serve xtn/edo31.xtn --pb-range 48
 xentool serve xtn/edo31.xtn --output "My MIDI Port"
 xentool serve xtn/edo31.xtn --mts-esp
 ```
 
-Loads the layout, sets pad colors on connected boards, and runs a live
-microtonal tuning server with a terminal UI showing active touches and
-tuning status.
+Loads the layout, sets pad colours on connected boards, and runs a
+live microtonal tuning server with a terminal UI showing active
+touches and tuning status.
 
-**Default mode: pitch bend retuning.** Intercepts MIDI from each Exquis,
-remaps note numbers and injects per-channel pitch bends to shift each note
-to its exact microtonal frequency, then forwards the retuned MIDI to a
-virtual output port. Preserves full MPE expression (X/Y/Z) while adding
-microtonal tuning.
+Uses **pitch-bend retuning** by default: each MPE channel carries a
+note plus a tiny per-note bend that shifts it to its exact microtonal
+frequency. The synth's per-note pitch-bend range must match
+`--pb-range` (default 16 semitones); otherwise the EDO quantisation
+drifts. Pass `--mts-esp` to switch to MTS-ESP master mode instead
+(one global 128-note table; one master per machine; max 128 unique
+notes).
 
-Requirements for pitch bend mode:
-- Install [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) and create a port named `loopMIDI Port` (the default)
-- In your synth (e.g. Pianoteq), disable the direct "Exquis" MIDI input and enable `loopMIDI Port` instead
-- The synth's per-note pitch bend range must match `--pb-range` (default: 16 semitones = ±1600 cents). Set Pianoteq's per-note PB range to ±1600 c, or pass `--pb-range 2` to keep Pianoteq's default — but that weakens the Exquis X-axis slide considerably.
+**Windows requires loopMIDI** — install
+[loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html),
+create a port named `loopMIDI Port`, and point your synth at it.
 
-How pitch bend retuning works:
-1. For each pad, the target frequency is computed from the .xtn's `Key_N`/`Chan_N` and the `Edo` setting.
-2. The nearest 12-TET MIDI note is found and the pitch bend offset to reach the exact microtonal frequency is calculated.
-3. On each `note_on`, a pitch bend message is injected before the `note_on` on the same MIDI channel.
-4. When the player uses the X axis (pitch bend expression), the player's bend is added to the tuning offset.
-5. All other MPE data (Y=CC74, Z=pressure) passes through unchanged.
+**Linux / macOS** — xentool creates its own subscribable virtual
+MIDI port (`Xentool Exquis MPE`) via ALSA seq / CoreMIDI. No virtual
+cable needed.
 
-Multi-board support: each board gets its own tuning state. Scales to 4+ boards.
+Multi-board: each board gets its own tuning state. Scales to 4+.
 
-**Alternative: MTS-ESP mode (`--mts-esp`).** Registers as an MTS-ESP master
-and broadcasts a global 128-note tuning table. The synth must be an MTS-ESP
-client (Pianoteq supports this). Limitations: only one master allowed, one
-global tuning table shared by all clients, max 128 unique notes (2 boards).
-
-### Non-pad LED control
-
-```powershell
-xentool control settings red
-xentool control encoder-1 blue
-xentool control slider-1 green
-xentool control 110 cyan         # raw control ID
-```
-
-Sets the LED color of encoders, buttons, and slider portions. Accepts
-named controls or raw numeric IDs (see `xentool help control`).
-
-### Note highlighting
-
-```powershell
-xentool highlight 60        # highlight middle C (green)
-xentool highlight 60 0      # turn off highlight
-```
-
-Sends Note On/Off on MIDI channel 1. Works independently of developer mode.
-Currently produces green highlights only (firmware-defined).
-
-### LED color strategy — snapshot approach
-
-The Exquis developer mode creates a fundamental conflict: taking over the
-pad zone gives full RGB LED control but **disables MPE output** (pitch bend,
-CC74, aftertouch). This tool solves it using the **snapshot technique**
-discovered in the [PitchGridRack](https://github.com/peterjungx/PitchGridRack)
-project:
-
-1. Enter developer mode for all zones **except pads** (mask `0x3A`).
-2. Send a Snapshot command (`09h`) that encodes per-pad MIDI note mappings and RGB colors in a single 262-byte SysEx message.
-3. Pads remain in normal mode — **MPE X/Y/Z output is fully preserved**.
-
-All pad color commands (`pad`, `pads fill`, `pads clear`, `pads test`) use
-this approach by default. Pass `--legacy` to fall back to direct dev-mode
-takeover (which disables MPE).
-
-Snapshot message format:
+### `xentool list` / `xentool midi`
 
 ```
-F0 00 21 7E 7F 09          — SysEx header + Snapshot command
-00 01 00 0E 00 00 01 01 00 00 00  — 11-byte config header
-[midinote r g b] × 61      — per-pad note + RGB (244 bytes)
-F7                          — SysEx end
+xentool list                                # all connected MIDI ports + Wooting devices
+xentool midi                                # hybrid live MPE monitor
+xentool midi --mode stream --mpe-only       # stream-of-events, MPE only
+xentool midi --device 1 --log-file …        # JSONL logging
 ```
 
-Total: 262 bytes. Each pad gets 4 bytes: MIDI note number (default
-`36+pad_id`) and RGB color (0–127 per channel).
+`xentool midi` shows active touches with live `X/Y/Z`, channel,
+note, value — press `q` to quit. Every session also logs to JSONL
+under `%LOCALAPPDATA%\xentool\logs\` (Windows) or `logs/` (Linux)
+unless `--no-log`.
 
-### Multi-Exquis device configuration
+### Pad colours, dev mode, control LEDs
 
-For multi-Exquis setups, create `devices.json` at
-`%LOCALAPPDATA%\xentool\config\devices.json`:
+```
+xentool pads fill amber                  # paint all pads
+xentool pads clear
+xentool pad 17 blue                      # paint one pad
+xentool control settings red             # paint a control LED
+xentool highlight 60                     # highlight middle C (firmware-green only)
+xentool dev on                           # explicit developer-mode control
+xentool dev off
+```
+
+All pad colour commands use the **MPE-safe snapshot technique** by
+default — colours appear without disabling pitch-bend / CC74 /
+aftertouch. Pass `--legacy` to take over the pad zone in dev mode
+instead (full LED freedom, but MPE expression turns off).
+
+### `xentool load <file.xtn>` — paint LEDs from a layout
+
+Loads an `.xtn` file (INI, compatible with `.wtn` / `.ltn`) and
+applies per-pad colours. Each `[BoardN]` section maps to a logical
+device name in `devices.json`. With one board section and one Exquis
+connected, auto-matches without config.
+
+Per-pad fields: `Key_N` (virtual MIDI note for the EDO calculation,
+not sent to the device), `Chan_N` (virtual MIDI channel), `Col_N`
+(hex RGB).
+
+Frequency formula (used by `serve`):
+```
+virtual_pitch = (Chan - 1) × Edo + Key + PitchOffset
+```
+
+### Multi-Exquis device config
+
+`devices.json` at `%LOCALAPPDATA%\xentool\config\devices.json` maps
+logical board names to USB serial numbers:
 
 ```json
 {
@@ -598,160 +441,166 @@ For multi-Exquis setups, create `devices.json` at
 }
 ```
 
-Serial numbers are shown by `xentool list`. Board names in `.xtn` files are
-matched to these logical names. The file is auto-created/updated by
-`sync_boards()` on every `load`/`serve` command — manual edits are only
-needed to pin a preferred board ordering.
-
-### MPE details surfaced by `xentool midi`
-
-The current Exquis user guide documents:
-
-- `X` as Pitch Bend
-- `Y` as `CC74`
-- `Z` as Channel Pressure or Polyphonic Aftertouch
-
-The hybrid UI updates those values in place for active touches instead of
-printing a new line for every pressure or tilt change.
-
-### Friendly control names
-
-When developer-mode channel 16 events match documented control identifiers,
-`xentool midi` shows names like `Settings`, `Play/Stop`, `Up`, `Down`,
-`Encoder 1`, `Encoder 1 Button`. Unknown identifiers fall back to raw
-numeric output.
-
-### Logging
-
-`xentool midi` logs automatically to JSONL unless `--no-log` is passed.
-
-Default location:
-- `%LOCALAPPDATA%\xentool\logs\…` if available via Windows app data lookup
-- otherwise `logs\…` inside the current working directory
-
-Each record includes timestamp, device number, port name, channel, event
-kind, note/value fields, and optional raw bytes:
-
-```json
-{"ts":"2026-04-19T12:34:56Z","device":1,"port":"Exquis 1","channel":3,"kind":"note_on","note":64,"value":92,"label":null,"raw":null}
-{"ts":"2026-04-19T12:34:56Z","device":1,"port":"Exquis 1","channel":16,"kind":"control","note":null,"value":127,"label":"play_stop","raw":null}
-```
+Auto-created/updated by `sync_boards()` on every `load`/`serve`
+command — manual edits only needed to pin a preferred ordering.
 
 ---
 
 ## Wooting backend
 
-The Wooting backend turns each analog key on a Wooting keyboard into a
-microtonal MIDI key with continuous aftertouch, driven from `.wtn` layout
-files. It loads the Wooting Analog and RGB SDKs at runtime (no compile-time
-dependency).
+The Wooting backend turns each analog key into a microtonal MIDI key
+with continuous aftertouch. Loads the Wooting Analog + RGB SDKs at
+runtime.
 
-### New .wtn layout
+### `xentool serve <file.wtn>` — analog-to-MIDI server
 
-```powershell
-xentool new my_layout.wtn --edo 31
-xentool new my_layout.wtn --edo 31 --boards 2 --pitch-offset 0
-xentool new my_layout.wtn --edo 31 --force
 ```
-
-Creates a blank `.wtn` file for a given EDO and board count. Each board is
-a 4×14 grid of cells; every cell starts at `Key=0 Chan=1 Col=000000`.
-
-### Load .wtn — paint LEDs
-
-```powershell
-xentool load my_layout.wtn
-```
-
-Loads a `.wtn` file and writes per-key LED colors to all connected Wooting
-keyboards via the RGB SDK. One-shot: no polling, no MIDI.
-
-### Serve — analog-to-MIDI with MTS-ESP
-
-```powershell
 xentool serve wtn/edo31.wtn
 xentool serve wtn/edo31.wtn --output "loopMIDI Port"      # Windows
-xentool serve wtn/edo31.wtn --output "Xentool Wooting"    # Linux/macOS
+xentool serve wtn/edo31.wtn --output "Xentool Wooting"    # Linux
 ```
 
-Loads the layout, paints LEDs, registers as an MTS-ESP master, and runs a
-**1 kHz polling hot loop** that reads per-key analog depths from the Wooting
-Analog SDK and emits velocity-mapped Note On/Off + continuous poly-pressure
-on a virtual MIDI port. The terminal UI shows currently-held notes,
-controls state, and an event log; press `q` to quit.
+Loads the layout, paints LEDs, registers as MTS-ESP master, and runs
+a 1 kHz polling hot loop that reads per-key analog depths and emits
+velocity-mapped Note On/Off + continuous poly-pressure on a virtual
+MIDI port. Terminal UI shows currently-held notes and event log;
+press `q` to quit.
 
-**MIDI output port — platform difference:**
+**MIDI output port:**
 
-- **Windows:** xentool *connects to* an existing virtual cable. Install
-  [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) and
-  create a port named `loopMIDI Port` (the `--output` default). Synths
-  subscribe to `loopMIDI Port` to receive xentool's MIDI.
-- **Linux / macOS:** xentool *creates* its own subscribable MIDI port via
-  ALSA seq / CoreMIDI — same approach as xenwooting's "XenWTN" port. No
-  virtual cable is needed. The default name is `Xentool Wooting`; it
-  shows up directly in MOD Pedalboard, Pianoteq, SuperCollider,
-  qjackctl, etc. Override the name with `--output "<name>"` if needed.
-  The Linux install script verifies that the ALSA sequencer (snd-seq)
-  is available and warns with a `modprobe snd-seq` hint if not.
+- **Windows:** xentool *connects to* a virtual cable. Install
+  loopMIDI and create a port named `loopMIDI Port`.
+- **Linux / macOS:** xentool *creates* its own subscribable port
+  (`Xentool Wooting`). Override the name with `--output "<name>"`.
 
-The hot loop is time-critical (it intentionally avoids any disk I/O); the
-TUI runs on its own thread with snapshots pushed every ~40 ms over a
-bounded channel, so playing latency is unaffected.
-
-**Live in-keyboard controls during `serve`** (key bindings on the Wooting
-itself):
+**Live in-keyboard controls** (key bindings on the Wooting itself):
 
 | Key             | Action                                              |
 | --------------- | --------------------------------------------------- |
-| Right Alt       | Cycle aftertouch mode: speed-mapped → peak-mapped → off |
+| Right Alt       | Cycle aftertouch mode (speed → peak → off)          |
 | Space (held)    | Octave hold (toggle per board)                       |
 | Arrow Left/Right | Adjust press threshold *or* aftertouch speed max    |
 | Arrow Down      | Cycle velocity profile (linear / gamma / log / inv-log) |
-| Left Ctrl       | Pitch bend up (analog depth → bend)                  |
-| Left Alt        | Pitch bend down                                      |
-| Left Meta       | Configurable analog CC (default CC4 board0, CC3 board1) |
+| Left Ctrl / Alt | Pitch bend up / down (analog → bend)                 |
+| Left Meta       | Configurable analog CC                               |
 | Context Menu    | Cycle to next `.wtn` file in `./wtn/`                |
 
-The screensaver blanks all LEDs after a configurable idle period
-(`screensaver_timeout_sec` in `settings.json` → `wooting.rgb`); the next
-key press wakes it and is suppressed (no spurious note).
+A configurable idle screensaver blanks all LEDs (`screensaver_timeout_sec`
+in `settings.json` → `wooting.rgb`); the next press wakes it (no
+spurious note).
 
-### .wtn layout format
+### `xentool new` / `xentool load`
 
-INI-style, structurally similar to `.xtn`:
-
-```ini
-Edo=31
-PitchOffset=0
-
-[Board0]
-Key_0=0
-Chan_0=1
-Col_0=FFDD00
-…
+```
+xentool new my_layout.wtn --edo 31           # blank 4×14 grid
+xentool load my_layout.wtn                   # paint LEDs
 ```
 
-The cell grid is 4×14 per board. Indices are linearized row-major. The
-xenwooting `.wtn` format is compatible — files from xenwooting load
-directly.
+`.wtn` files are INI, structurally similar to `.xtn`. `[Board0]`
+section per board, `Key_N` / `Chan_N` / `Col_N` per cell. xenwooting
+files load directly — same format.
 
-### Wooting tuning behavior
+### Tuning behaviour
 
-Wooting `serve` is **MTS-ESP only** (no pitch-bend retuning mode). The
-synth must be an MTS-ESP client with multichannel tuning support (e.g.
-Pianoteq). The MTS-ESP master publishes both:
+Wooting `serve` is **MTS-ESP only** — the synth must be an MTS-ESP
+client with multichannel tuning (e.g. Pianoteq). Single-channel
+MTS-ESP synths read the wrong frequencies.
 
-- a global 128-note tuning table (for non-multichannel-aware clients), and
-- a 16×128 multichannel tuning table — one full 128-note table per MIDI
-  channel — required because Lumatone-style channel-stripe layouts
+Bend keys (Left Ctrl / Left Alt) emit raw 14-bit pitch-bend that
+xentool relays without scaling, so the synth-side bend range is
+your call: ±2 for pianistic feel, ±12 for organ portamento. The
+bundled SC piano patch defaults to ±2.
+
+---
+
+## Pushing your own params to the HUD from any OSC client
+
+xentool listens for OSC on UDP `9000` by default (override with
+`--osc-port`). Send `/xentool/param/<group>/<name> <value> [<unit>]`
+for a sticky parameter, or `/xentool/event <text>` for a one-off log
+line. The bundled SC patches use this to surface synth state on the
+HUD's right-edge strip.
+
+```sclang
+~hud = NetAddr("127.0.0.1", 9000);
+~hud.sendMsg("/xentool/param/filter/cutoff", 880.0, "Hz");
+~hud.sendMsg("/xentool/event", "preset → bright");
+```
+
+---
+
+## Technical reference
+
+### Pitch-bend retuning (Exquis serve, default)
+
+For each pad, the exact target frequency is computed from the .xtn's
+`Key_N` / `Chan_N` and the `Edo` value. The nearest 12-TET MIDI
+note is chosen and the pitch-bend offset to reach the exact
+microtonal frequency is calculated. On each `note_on`, a pitch-bend
+message is injected before the `note_on` on the same MIDI channel.
+Player X-axis bends are added to the tuning offset; Y (CC74) and Z
+(channel pressure / poly aftertouch) pass through unchanged.
+
+### MTS-ESP master (Exquis `--mts-esp` and Wooting `serve`)
+
+For the Wooting flow xentool publishes both:
+
+- a global 128-note tuning table (for non-multichannel-aware clients),
+- a 16×128 multichannel tuning table — one full 128-note table per
+  MIDI channel, required because Lumatone-style channel-stripes
   assign different absolute pitches to the same MIDI note number on
-  different channels (`virtual_pitch = (chan-1)*edo + note + offset`),
-  so a single global table would collide.
+  different channels.
 
-### Wooting settings
+Loaded at runtime from `LIBMTS.dll` on Windows, `libMTS.so` /
+`libMTS.dylib` elsewhere.
 
-User-tunable parameters live in `%LOCALAPPDATA%\xentool\config\settings.json`
-under the `wooting` section. Defaults are ported verbatim from xenwooting
-and cover press threshold, peak-tracking window, aftertouch deltas,
-screensaver timeout, control-bar key map, and per-board CC/RGB index. See
-`src/settings.rs` for the full list and defaults.
+### Snapshot LED technique (Exquis)
+
+The Exquis developer-mode API requires taking over the pad zone to
+set LED colours, which **disables MPE output**. The Snapshot command
+(`09h`) sidesteps this: enter dev mode for non-pad zones only (mask
+`0x3A`), then send a 262-byte snapshot SysEx that encodes both MIDI
+note mappings and RGB colours for all 61 pads. Pads stay in normal
+mode, so MPE is preserved.
+
+This is the default for `pad`, `pads fill`, `pads clear`, `pads test`.
+Pass `--legacy` to fall back to direct dev-mode takeover (loses MPE).
+Discovered via [PitchGridRack](https://github.com/peterjungx/PitchGridRack).
+
+### `--tune-supercollider` (Wooting flow)
+
+SuperCollider has no MTS-ESP client, so on the Wooting flow xentool
+also broadcasts the active tuning to UDP `127.0.0.1:57120`:
+
+```
+/xentool/tuning <edo:int> <pitch_offset:int> <layout_id:str>
+```
+
+at startup, on every layout cycle, and every 3 s as a resync.
+`midi_piano_xentool.scd` listens for this so a tuning swap reaches
+the synth without restarting sclang.
+
+The flag is **off** by default, **on** in `run-all-wooting.bat`,
+and not used by `run-all-exquis.bat`.
+
+### Wooting settings file
+
+User-tunable parameters live in
+`%LOCALAPPDATA%\xentool\config\settings.json` under the `wooting`
+section. Defaults are ported from xenwooting and cover press
+threshold, peak-tracking window, aftertouch deltas, screensaver
+timeout, control-bar key map, and per-board CC/RGB index. See
+`src/settings.rs` for the full list.
+
+---
+
+## Help & reporting issues
+
+```
+xentool help
+xentool help midi
+xentool --help
+```
+
+Issues, bug reports, feature requests:
+<https://github.com/mcleinn/xentool/issues>.
