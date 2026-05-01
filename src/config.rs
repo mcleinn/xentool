@@ -46,9 +46,23 @@ pub fn load_device_config() -> Result<DeviceConfig> {
     }
     let content =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let config: DeviceConfig =
+    let mut config: DeviceConfig =
         serde_json::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+    // Older xentool builds on Windows persisted Windows-MIDI-Service
+    // synthetic IDs (`MIDIU_KSA_*`) as if they were USB serials. They
+    // are not stable across power cycles, which was the original cause
+    // of board0..boardN reshuffling. The current code reads real USB
+    // serials via DRV_QUERYDEVICEINTERFACE; the synthetic-id pins can't
+    // match anything we'll see going forward, so we drop them on load.
+    // Doing this at load time means the next sync writes a clean file.
+    config
+        .devices
+        .retain(|_, ident| !ident.serial.as_deref().is_some_and(is_legacy_synthetic_id));
     Ok(config)
+}
+
+fn is_legacy_synthetic_id(serial: &str) -> bool {
+    serial.starts_with("MIDIU_KSA_")
 }
 
 fn save_device_config(config: &DeviceConfig) -> Result<()> {

@@ -14,3 +14,5 @@ pub mod proto;
 pub mod tuning;
 pub mod ui;
 pub mod usb;
+#[cfg(windows)]
+pub mod winmm_drv;

@@ -5,7 +5,18 @@ use std::str::FromStr;
 use std::sync::mpsc::Sender;
 
 use crate::exquis::mpe::InputMessage;
-use crate::exquis::usb::{UsbDeviceInfo, list_exquis_usb_devices};
+#[cfg(not(windows))]
+use crate::exquis::usb::list_exquis_usb_devices;
+use crate::exquis::usb::UsbDeviceInfo;
+#[cfg(windows)]
+use crate::exquis::winmm_drv::{MidiDirection, parse_usb_serial, query_device_interface};
+
+/// Intuitive Instruments / Exquis USB IDs. Used to filter winmm ports
+/// to actual hardware Exquis on Windows (see `resolve_usb_info`).
+#[cfg(windows)]
+const EXQUIS_VID: u16 = 0x2985;
+#[cfg(windows)]
+const EXQUIS_PID: u16 = 0x0007;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceSelection {
@@ -48,50 +59,102 @@ pub fn list_devices() -> Result<Vec<ExquisDevice>> {
     input.ignore(Ignore::None);
     let output = MidiOutput::new("xentool-list-output")?;
 
-    let mut input_names: Vec<String> = Vec::new();
-    for port in input.ports() {
-        let name = input.port_name(&port)?;
+    // Track each Exquis-named port together with its absolute winmm
+    // device id (the index into midir's full ports() list). On Windows
+    // we need that id to query DRV_QUERYDEVICEINTERFACE for the real USB
+    // serial. On Linux it's harmless.
+    let mut input_ports: Vec<(usize, String)> = Vec::new();
+    for (idx, port) in input.ports().iter().enumerate() {
+        let name = input.port_name(port)?;
         if is_exquis_port(&name) {
-            input_names.push(name);
+            input_ports.push((idx, name));
         }
     }
 
-    let mut output_names: Vec<String> = Vec::new();
-    for port in output.ports() {
-        let name = output.port_name(&port)?;
+    let mut output_ports: Vec<(usize, String)> = Vec::new();
+    for (idx, port) in output.ports().iter().enumerate() {
+        let name = output.port_name(port)?;
         if is_exquis_port(&name) {
-            output_names.push(name);
+            output_ports.push((idx, name));
         }
     }
 
-    // Pair inputs and outputs by position. Multiple devices with the same name
-    // (e.g. two "Exquis") are kept as separate entries.
-    let count = input_names.len().max(output_names.len());
+    // Pair inputs and outputs by position. Multiple devices with the same
+    // name (e.g. four "Exquis") are kept as separate entries.
+    let count = input_ports.len().max(output_ports.len());
+    #[cfg(not(windows))]
     let usb_devices = list_exquis_usb_devices().unwrap_or_default();
     let mut devices = Vec::new();
     for i in 0..count {
-        let input_name = input_names.get(i).cloned();
-        let output_name = output_names.get(i).cloned();
-        let label = input_name
-            .clone()
-            .or_else(|| output_name.clone())
+        let input_pair = input_ports.get(i).cloned();
+        let output_pair = output_ports.get(i).cloned();
+        let label = input_pair
+            .as_ref()
+            .map(|(_, n)| n.clone())
+            .or_else(|| output_pair.as_ref().map(|(_, n)| n.clone()))
             .unwrap_or_else(|| "Exquis".to_string());
-        // Disambiguate label for display when multiple devices share the same name
         let display_label = if count > 1 {
             format!("{} ({})", label, i + 1)
         } else {
             label.clone()
         };
+
+        #[cfg(windows)]
+        let usb_info = resolve_usb_info_windows(
+            input_pair.as_ref().map(|(idx, _)| *idx),
+            output_pair.as_ref().map(|(idx, _)| *idx),
+        );
+        #[cfg(not(windows))]
+        let usb_info = match_usb_info(&usb_devices, &label, i);
+
         devices.push(ExquisDevice {
             number: i + 1,
             label: display_label,
-            input_name,
-            output_name,
-            usb_info: match_usb_info(&usb_devices, &label, i),
+            input_name: input_pair.map(|(_, n)| n),
+            output_name: output_pair.map(|(_, n)| n),
+            usb_info,
         });
     }
 
     Ok(devices)
+}
+
+/// Windows: resolve the real USB serial of the device backing a midir
+/// port via DRV_QUERYDEVICEINTERFACE. Returns `None` if the port is not
+/// a USB-attached Exquis (e.g. a phantom MIDISRV entry from a
+/// previously-connected device whose USB parent is gone).
+#[cfg(windows)]
+fn resolve_usb_info_windows(
+    input_winmm_id: Option<usize>,
+    output_winmm_id: Option<usize>,
+) -> Option<UsbDeviceInfo> {
+    // Try the input side first (it's what xentool listens on); fall back
+    // to the output if the input query fails.
+    let path = input_winmm_id
+        .and_then(|id| query_device_interface(MidiDirection::Input, id as u32).ok())
+        .or_else(|| {
+            output_winmm_id
+                .and_then(|id| query_device_interface(MidiDirection::Output, id as u32).ok())
+        })?;
+
+    let (vid, pid, serial) = parse_usb_serial(&path)?;
+    if vid != EXQUIS_VID || pid != EXQUIS_PID {
+        return None;
+    }
+
+    Some(UsbDeviceInfo {
+        product_name: Some("Exquis".to_string()),
+        manufacturer: Some("Intuitive Instruments".to_string()),
+        serial_number: Some(serial.clone()),
+        vendor_id: vid,
+        product_id: pid,
+        bus_number: 0,
+        address: 0,
+        port_numbers: Vec::new(),
+        location: path,
+        unique_id: serial,
+        firmware_version: None,
+    })
 }
 
 pub fn select_devices(
@@ -208,6 +271,7 @@ fn find_nth_port_by_name<T: Clone>(
         .cloned()
 }
 
+#[cfg(not(windows))]
 fn match_usb_info(
     usb_devices: &[UsbDeviceInfo],
     label: &str,
