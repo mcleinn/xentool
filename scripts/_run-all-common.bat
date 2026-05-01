@@ -29,6 +29,12 @@ REM `_run-all-piano-studio.bat` for the piano studio.
 if not defined STUDIO_SCRIPT set "STUDIO_SCRIPT="
 if not defined STUDIO_TITLE  set "STUDIO_TITLE=studio"
 if not defined STUDIO_DIR    set "STUDIO_DIR=%REPO%\supercollider\tanpura_studio"
+REM Optional xentool web editor launched as an additional wt tab.
+REM Caller sets EDIT_SCRIPT (basename of a *.bat in this dir) to enable;
+REM the editor is the visual layout editor served at http://localhost:8088/
+REM and is independent of xentool serve / xenharm / SC.
+if not defined EDIT_SCRIPT   set "EDIT_SCRIPT="
+if not defined EDIT_TITLE    set "EDIT_TITLE=xentool edit"
 
 REM --- locate wt.exe ---
 REM 1) PATH lookup (covers most installs).
@@ -63,21 +69,42 @@ if defined WT (
     echo Layout:                 !LAYOUT!
     echo SC patch:               !SC_SCRIPT!
     if defined STUDIO_SCRIPT echo Studio:                 !STUDIO_TITLE! ^(!STUDIO_SCRIPT!^)
+    if defined EDIT_SCRIPT   echo Editor:                 !EDIT_TITLE! ^(!EDIT_SCRIPT!^)
     REM `;` separates tabs in the wt command — escape as `^;` for cmd.exe.
     REM `-w new` opens a fresh wt window; `focus-tab -t 0` focuses xentool.
+    REM Four branches because STUDIO and EDIT are independently optional.
     if defined STUDIO_SCRIPT (
-        "!WT!" -w new ^
-            new-tab --title "xentool (!BACKEND!)" -d "%REPO%"                 cmd /k "%~dp0_run-all-xentool.bat" "!LAYOUT!" ^
-^;          new-tab --title "xenharm"             -d "%REPO%\xenharm_service" cmd /k "%~dp0start-xenharm.bat" ^
-^;          new-tab --title "supercollider"       -d "%REPO%\scripts"         cmd /k "%~dp0_run-all-supercollider.bat" "!SC_SCRIPT!" ^
-^;          new-tab --title "!STUDIO_TITLE!"      -d "!STUDIO_DIR!"           cmd /k "%~dp0!STUDIO_SCRIPT!" ^
-^;          focus-tab -t 0
+        if defined EDIT_SCRIPT (
+            "!WT!" -w new ^
+                new-tab --title "xentool (!BACKEND!)" -d "%REPO%"                 cmd /k "%~dp0_run-all-xentool.bat" "!LAYOUT!" ^
+^;              new-tab --title "xenharm"             -d "%REPO%\xenharm_service" cmd /k "%~dp0start-xenharm.bat" ^
+^;              new-tab --title "supercollider"       -d "%REPO%\scripts"         cmd /k "%~dp0_run-all-supercollider.bat" "!SC_SCRIPT!" ^
+^;              new-tab --title "!STUDIO_TITLE!"      -d "!STUDIO_DIR!"           cmd /k "%~dp0!STUDIO_SCRIPT!" ^
+^;              new-tab --title "!EDIT_TITLE!"        -d "%REPO%"                 cmd /k "%~dp0!EDIT_SCRIPT!" "!LAYOUT!" ^
+^;              focus-tab -t 0
+        ) else (
+            "!WT!" -w new ^
+                new-tab --title "xentool (!BACKEND!)" -d "%REPO%"                 cmd /k "%~dp0_run-all-xentool.bat" "!LAYOUT!" ^
+^;              new-tab --title "xenharm"             -d "%REPO%\xenharm_service" cmd /k "%~dp0start-xenharm.bat" ^
+^;              new-tab --title "supercollider"       -d "%REPO%\scripts"         cmd /k "%~dp0_run-all-supercollider.bat" "!SC_SCRIPT!" ^
+^;              new-tab --title "!STUDIO_TITLE!"      -d "!STUDIO_DIR!"           cmd /k "%~dp0!STUDIO_SCRIPT!" ^
+^;              focus-tab -t 0
+        )
     ) else (
-        "!WT!" -w new ^
-            new-tab --title "xentool (!BACKEND!)" -d "%REPO%"                 cmd /k "%~dp0_run-all-xentool.bat" "!LAYOUT!" ^
-^;          new-tab --title "xenharm"             -d "%REPO%\xenharm_service" cmd /k "%~dp0start-xenharm.bat" ^
-^;          new-tab --title "supercollider"       -d "%REPO%\scripts"         cmd /k "%~dp0_run-all-supercollider.bat" "!SC_SCRIPT!" ^
-^;          focus-tab -t 0
+        if defined EDIT_SCRIPT (
+            "!WT!" -w new ^
+                new-tab --title "xentool (!BACKEND!)" -d "%REPO%"                 cmd /k "%~dp0_run-all-xentool.bat" "!LAYOUT!" ^
+^;              new-tab --title "xenharm"             -d "%REPO%\xenharm_service" cmd /k "%~dp0start-xenharm.bat" ^
+^;              new-tab --title "supercollider"       -d "%REPO%\scripts"         cmd /k "%~dp0_run-all-supercollider.bat" "!SC_SCRIPT!" ^
+^;              new-tab --title "!EDIT_TITLE!"        -d "%REPO%"                 cmd /k "%~dp0!EDIT_SCRIPT!" "!LAYOUT!" ^
+^;              focus-tab -t 0
+        ) else (
+            "!WT!" -w new ^
+                new-tab --title "xentool (!BACKEND!)" -d "%REPO%"                 cmd /k "%~dp0_run-all-xentool.bat" "!LAYOUT!" ^
+^;              new-tab --title "xenharm"             -d "%REPO%\xenharm_service" cmd /k "%~dp0start-xenharm.bat" ^
+^;              new-tab --title "supercollider"       -d "%REPO%\scripts"         cmd /k "%~dp0_run-all-supercollider.bat" "!SC_SCRIPT!" ^
+^;              focus-tab -t 0
+        )
     )
     exit /b 0
 )
@@ -92,4 +119,5 @@ start "xenharm"       cmd /k "%~dp0start-xenharm.bat"
 start "xentool"       cmd /k "%~dp0_run-all-xentool.bat" "!LAYOUT!"
 start "supercollider" cmd /k "%~dp0_run-all-supercollider.bat" "!SC_SCRIPT!"
 if defined STUDIO_SCRIPT start "!STUDIO_TITLE!" cmd /k "%~dp0!STUDIO_SCRIPT!"
+if defined EDIT_SCRIPT   start "!EDIT_TITLE!"   cmd /k "%~dp0!EDIT_SCRIPT!" "!LAYOUT!"
 exit /b 0

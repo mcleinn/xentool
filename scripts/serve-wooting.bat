@@ -2,7 +2,7 @@
 rem Run `xentool serve` against a Wooting layout.
 rem
 rem Usage:
-rem   scripts\serve-wooting.bat                  (default: wtn\edo31.wtn)
+rem   scripts\serve-wooting.bat                  (default: wtn\edo53.wtn)
 rem   scripts\serve-wooting.bat wtn\edo24.wtn
 rem   scripts\serve-wooting.bat wtn\edo31.wtn --output "loopMIDI Port"
 rem
@@ -19,7 +19,7 @@ set "PROJECT_ROOT=%SCRIPT_DIR%.."
 pushd "%PROJECT_ROOT%" || exit /b 1
 
 if "%~1"=="" (
-    xentool serve wtn\edo31.wtn
+    xentool serve wtn\edo53.wtn
 ) else (
     xentool serve %*
 )

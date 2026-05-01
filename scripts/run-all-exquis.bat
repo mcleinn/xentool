@@ -10,9 +10,11 @@ REM are untouched.
 
 setlocal
 set "BACKEND=exquis"
-if not defined LAYOUT        set "LAYOUT=%~dp0..\xtn\edo31.xtn"
+if not defined LAYOUT        set "LAYOUT=%~dp0..\xtn\edo53.xtn"
 if not defined SC_SCRIPT     set "SC_SCRIPT=mpe_tanpura_xentool.scd"
 if not defined STUDIO_SCRIPT set "STUDIO_SCRIPT=_run-all-studio.bat"
 if not defined STUDIO_TITLE  set "STUDIO_TITLE=tanpura studio"
 if not defined STUDIO_DIR    set "STUDIO_DIR=%~dp0..\supercollider\tanpura_studio"
+if not defined EDIT_SCRIPT   set "EDIT_SCRIPT=_run-all-edit.bat"
+if not defined EDIT_TITLE    set "EDIT_TITLE=xentool edit"
 call "%~dp0_run-all-common.bat"

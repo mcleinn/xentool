@@ -2,7 +2,7 @@
 # Run `xentool serve` against an Exquis layout.
 #
 # Usage:
-#   bash scripts/serve-exquis.sh                   # default: xtn/edo31.xtn
+#   bash scripts/serve-exquis.sh                   # default: xtn/edo53.xtn
 #   bash scripts/serve-exquis.sh xtn/edo24.xtn
 #   bash scripts/serve-exquis.sh xtn/edo31.xtn --mts-esp
 #   bash scripts/serve-exquis.sh xtn/edo31.xtn --pb-range 48
@@ -17,7 +17,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 if [[ $# -eq 0 ]]; then
-    set -- xtn/edo31.xtn
+    set -- xtn/edo53.xtn
 fi
 
 exec xentool serve "$@"

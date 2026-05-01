@@ -308,6 +308,23 @@ setup_studio() {
     STUDIO_INSTALLED=1
 }
 
+setup_editor() {
+    # The xentool web editor (xentool edit ...) is an HTTP server that
+    # reads and writes the .xtn / .wtn file directly. It's independent
+    # of `xentool serve` — they can both run simultaneously against the
+    # same file (the editor reloads the file on save; serve resumes
+    # from settings). Default port 8088.
+    step "xentool web editor (visual layout editor on http://localhost:8088/)"
+    if ! yesno "  Install + autostart the xentool editor?" Y; then
+        warn "  Skipping editor service. You can still run \`xentool edit <file>\` manually."
+        EDITOR_INSTALLED=0
+        return
+    fi
+    EDITOR_INSTALLED=1
+    EDITOR_PORT="${EDITOR_PORT:-8088}"
+    ok "  Editor will be served at http://localhost:$EDITOR_PORT/"
+}
+
 setup_supercollider() {
     step "SuperCollider tanpura synth (mpe_tanpura_xentool.scd)"
     if ! yesno "  Install + autostart the SuperCollider tanpura synth?" N; then
@@ -417,6 +434,39 @@ WRAP
     ok "  wrote $bin"
 }
 
+write_editor_unit() {
+    [[ "${EDITOR_INSTALLED:-0}" == 1 ]] || return
+    # Picks a default layout to serve. Prefers the explicit
+    # XENTOOL_LAYOUT chosen for the serve unit; falls back to the
+    # backend's edo53.<kind> if present; otherwise refuses to write
+    # the unit (the editor needs a target file).
+    local edit_target="${XENTOOL_LAYOUT:-}"
+    if [[ -z "$edit_target" ]]; then
+        local fallback="$REPO_ROOT/$LAYOUT_KIND/edo53.$LAYOUT_KIND"
+        if [[ -f "$fallback" ]]; then
+            edit_target="$fallback"
+        else
+            warn "  No layout chosen and $fallback missing — skipping xentool-edit.service."
+            return
+        fi
+    fi
+    write_unit xentool-edit.service <<UNIT
+[Unit]
+Description=xentool web editor ($BACKEND backend, http://localhost:${EDITOR_PORT:-8088}/)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$HOME/.cargo/bin/xentool edit "$edit_target" --port ${EDITOR_PORT:-8088} --no-open
+WorkingDirectory=$REPO_ROOT
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+UNIT
+}
+
 write_studio_unit() {
     [[ "${STUDIO_INSTALLED:-0}" == 1 ]] || return
     local title port
@@ -494,6 +544,7 @@ start_services() {
     units+=(xentool.service)
     [[ "${SC_INSTALLED:-0}"      == 1 ]] && units+=(xentool-supercollider.service)
     [[ "${STUDIO_INSTALLED:-0}"  == 1 ]] && units+=(xentool-studio.service)
+    [[ "${EDITOR_INSTALLED:-0}"  == 1 ]] && units+=(xentool-edit.service)
 
     for u in "${units[@]}"; do
         systemctl --user enable "$u"
@@ -525,7 +576,9 @@ print_plan() {
     [[ "$BACKEND" == wooting ]] && echo "  4. Install Wooting Analog + RGB SDKs"
     echo "  5. (optional) xenharm sidecar — Python 3.10+ in a venv"
     echo "  6. (optional) SuperCollider tanpura synth"
-    echo "  7. Write systemd user units, enable lingering, start services"
+    echo "  7. (optional) Studio web UI (Flask + python-osc relay)"
+    echo "  8. (optional) xentool web editor (visual layout editor)"
+    echo "  9. Write systemd user units, enable lingering, start services"
     echo
     hr
 }
@@ -540,15 +593,25 @@ prompt_layout() {
     echo "Available .$kind layouts in $dir:"
     local files=("$dir"/*."$kind")
     [[ -e "${files[0]}" ]] || { XENTOOL_LAYOUT=""; return; }
+
+    # Prefer edo53 as the default if it exists — it's the layout we
+    # ship the run-all/serve scripts against and the one most users
+    # land on for serious play. Falls back to "resume last-used" only
+    # if edo53.<kind> isn't present.
+    local default_idx=0 default_label="<resume last-used at runtime>"
     local i=0
     for f in "${files[@]}"; do
         i=$((i + 1))
         printf "  %d) %s\n" "$i" "$(basename "$f")"
+        if [[ "$(basename "$f")" == "edo53.$kind" ]]; then
+            default_idx=$i
+            default_label="$(basename "$f")"
+        fi
     done
     echo "  0) <resume last-used at runtime>"
     local sel
-    read -r -p "Pick a default layout for the systemd service [0]: " sel
-    sel="${sel:-0}"
+    read -r -p "Pick a default layout for the systemd service [$default_idx — $default_label]: " sel
+    sel="${sel:-$default_idx}"
     if [[ "$sel" -ge 1 && "$sel" -le ${#files[@]} ]]; then
         XENTOOL_LAYOUT="${files[$((sel - 1))]}"
     else
@@ -597,6 +660,11 @@ print_post_install_help() {
         echo "  journalctl --user -u xentool-studio -f"
         echo
         echo "Studio web UI: http://localhost:$sport/"
+    }
+    [[ "${EDITOR_INSTALLED:-0}"  == 1 ]] && {
+        echo "  journalctl --user -u xentool-edit -f"
+        echo
+        echo "Editor web UI: http://localhost:${EDITOR_PORT:-8088}/"
     }
     echo
     echo "Manage services:"
@@ -651,6 +719,7 @@ install_linux_main() {
     setup_xenharm
     setup_supercollider
     setup_studio
+    setup_editor
 
     prompt_layout "$LAYOUT_KIND" "$REPO_ROOT/$LAYOUT_KIND"
     # Note: there's no MIDI-output prompt anymore — xentool creates its own
@@ -664,6 +733,7 @@ install_linux_main() {
     write_xentool_unit
     write_supercollider_unit
     write_studio_unit
+    write_editor_unit
     write_xentool_tui_helper
 
     enable_lingering

@@ -13,7 +13,7 @@ REM are untouched.
 
 setlocal
 set "BACKEND=wooting"
-if not defined LAYOUT             set "LAYOUT=%~dp0..\wtn\edo31.wtn"
+if not defined LAYOUT             set "LAYOUT=%~dp0..\wtn\edo53.wtn"
 if not defined SC_SCRIPT          set "SC_SCRIPT=midi_piano_xentool.scd"
 REM SC has no MTS-ESP client; xentool needs to push the active EDO and
 REM pitch_offset over OSC so the SC patch can re-derive frequencies on
@@ -26,4 +26,6 @@ REM that tweaks the piano SynthDef live via OSC on 57123.
 if not defined STUDIO_SCRIPT      set "STUDIO_SCRIPT=_run-all-piano-studio.bat"
 if not defined STUDIO_TITLE       set "STUDIO_TITLE=piano studio"
 if not defined STUDIO_DIR         set "STUDIO_DIR=%~dp0..\supercollider\piano_studio"
+if not defined EDIT_SCRIPT        set "EDIT_SCRIPT=_run-all-edit.bat"
+if not defined EDIT_TITLE         set "EDIT_TITLE=xentool edit"
 call "%~dp0_run-all-common.bat"

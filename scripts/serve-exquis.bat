@@ -2,7 +2,7 @@
 rem Run `xentool serve` against an Exquis layout.
 rem
 rem Usage:
-rem   scripts\serve-exquis.bat                   (default: xtn\edo31.xtn)
+rem   scripts\serve-exquis.bat                   (default: xtn\edo53.xtn)
 rem   scripts\serve-exquis.bat xtn\edo24.xtn
 rem   scripts\serve-exquis.bat xtn\edo31.xtn --mts-esp
 rem   scripts\serve-exquis.bat xtn\edo31.xtn --pb-range 48
@@ -17,7 +17,7 @@ set "PROJECT_ROOT=%SCRIPT_DIR%.."
 pushd "%PROJECT_ROOT%" || exit /b 1
 
 if "%~1"=="" (
-    xentool serve xtn\edo31.xtn
+    xentool serve xtn\edo53.xtn
 ) else (
     xentool serve %*
 )

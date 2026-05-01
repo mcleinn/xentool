@@ -2,7 +2,7 @@
 # Run `xentool serve` against a Wooting layout.
 #
 # Usage:
-#   bash scripts/serve-wooting.sh                  # default: wtn/edo31.wtn
+#   bash scripts/serve-wooting.sh                  # default: wtn/edo53.wtn
 #   bash scripts/serve-wooting.sh wtn/edo24.wtn
 #   bash scripts/serve-wooting.sh wtn/edo31.wtn --output "loopMIDI Port"
 #
@@ -19,7 +19,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 if [[ $# -eq 0 ]]; then
-    set -- wtn/edo31.wtn
+    set -- wtn/edo53.wtn
 fi
 
 exec xentool serve "$@"
