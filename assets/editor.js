@@ -42,6 +42,7 @@ let selection = new Set();
 let hoveredPad = null;
 let importState = null;  // { pads, tx, ty, rot, scope: 'global'|boardName }
 let viewMode = 'combined';  // 'combined' | 'individual'
+let displayMode = 'virtual';  // 'virtual' (key/chan) | 'absolute' (single integer pitch)
 let dirty = false;
 let currentLayoutName = '';
 
@@ -368,8 +369,7 @@ function createWootingCanvas(name, rotate180) {
     if (mismatchSet.has(selKey)) btn.classList.add('mismatch');
     else if (missingSet.has(selKey)) btn.classList.add('missing');
 
-    const text = (padInfo.chan === 0) ? '–' : `${padInfo.key}/${padInfo.chan}`;
-    btn.textContent = text;
+    btn.textContent = padLabel(padInfo, true);
     btn.addEventListener('click', (e) => onPadClick(e, name, selKeyIdx));
     canvas.appendChild(btn);
   }
@@ -487,7 +487,7 @@ function drawPad(svg, padInfo, boardName, padId, hx, hy, ox, oy, orient) {
   lbl.setAttribute('y', cy + 3);
   lbl.setAttribute('class', 'pad-label');
   if (isDark(padInfo.color)) lbl.classList.add('light');
-  lbl.textContent = `${padInfo.key}/${padInfo.chan}`;
+  lbl.textContent = padLabel(padInfo, false);
   g.appendChild(lbl);
 
   const padIdLbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -659,18 +659,29 @@ document.getElementById('save').addEventListener('click', async () => {
   }
 });
 
-// View mode toggle
-for (const radio of document.querySelectorAll('input[name="viewMode"]')) {
-  radio.addEventListener('change', (e) => {
-    viewMode = e.target.value;
-    // Reset import state on view mode switch to avoid scope mismatch.
-    resetImport();
-    renderBoards();
-    // Global import only makes sense in combined view.
-    document.getElementById('globalImportLabel').style.display =
-      viewMode === 'combined' ? '' : 'none';
-  });
-}
+// View mode toggle (Combined / Individual). Single button that flips state
+// on click; the label always shows the *active* mode.
+document.getElementById('viewModeToggle').addEventListener('click', (e) => {
+  const btn = e.currentTarget;
+  viewMode = (btn.dataset.mode === 'combined') ? 'individual' : 'combined';
+  btn.dataset.mode = viewMode;
+  btn.textContent = viewMode === 'combined' ? 'Combined' : 'Individual';
+  // Reset import state on view mode switch to avoid scope mismatch.
+  resetImport();
+  renderBoards();
+  // Global import only makes sense in combined view.
+  document.getElementById('globalImportLabel').style.display =
+    viewMode === 'combined' ? '' : 'none';
+});
+
+// Display mode toggle (Virtual key/chan / Absolute pitch integer). Same pattern.
+document.getElementById('displayModeToggle').addEventListener('click', (e) => {
+  const btn = e.currentTarget;
+  displayMode = (btn.dataset.mode === 'virtual') ? 'absolute' : 'virtual';
+  btn.dataset.mode = displayMode;
+  btn.textContent = displayMode === 'virtual' ? 'Virtual' : 'Absolute';
+  renderBoards();
+});
 
 // ---- Import flow ----
 
@@ -824,6 +835,19 @@ function isMissingEntry(entry) {
 function currentEdo() {
   const e = parseInt(document.getElementById('edo').value, 10);
   return Number.isFinite(e) && e > 0 ? e : null;
+}
+
+// Pad label text for in-grid rendering. Honours the Virtual/Absolute
+// display toggle. `inactiveAsDash` lets the Wooting branch keep its
+// existing convention of showing "–" for chan==0 (inactive key).
+function padLabel(padInfo, inactiveAsDash) {
+  if (inactiveAsDash && padInfo.chan === 0) return '–';
+  if (displayMode === 'absolute') {
+    const p = pitchOfEntry(padInfo);
+    if (p !== null) return String(p);
+    // No EDO set yet — fall through to virtual so the user still sees something.
+  }
+  return `${padInfo.key}/${padInfo.chan}`;
 }
 
 // Compute abs_pitch for a pad entry.

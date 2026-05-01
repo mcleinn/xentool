@@ -13,8 +13,8 @@
       <label>PitchOffset <input type="number" id="pitchOffset" step="1" size="4"></label>
     </div>
     <div class="view-toggle">
-      <label><input type="radio" name="viewMode" value="combined" checked> Combined</label>
-      <label><input type="radio" name="viewMode" value="individual"> Individual</label>
+      <button type="button" id="viewModeToggle" class="toggle-btn" data-mode="combined" title="Click to switch between Combined and Individual board layouts">Combined</button>
+      <button type="button" id="displayModeToggle" class="toggle-btn" data-mode="virtual" title="Click to switch pad labels between virtual (key/chan) and absolute pitch">Virtual</button>
     </div>
     <div class="layout-picker">
       <label>Layout <select id="layoutSelect"></select></label>

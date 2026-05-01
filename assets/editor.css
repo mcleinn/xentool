@@ -31,14 +31,15 @@ body {
 
 .view-toggle {
   display: flex;
-  gap: 0.7rem;
+  gap: 0.4rem;
   font-size: 0.85rem;
   padding: 0 0.6rem;
   border-left: 1px solid #444;
   border-right: 1px solid #444;
 }
-.view-toggle label {
-  cursor: pointer;
+.view-toggle .toggle-btn {
+  min-width: 5.5rem;
+  text-align: center;
 }
 
 .layout-picker {
