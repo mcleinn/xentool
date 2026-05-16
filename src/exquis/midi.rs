@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput};
+#[cfg(not(windows))]
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::mpsc::Sender;
@@ -51,6 +53,8 @@ pub struct ExquisDevice {
     pub label: String,
     pub input_name: Option<String>,
     pub output_name: Option<String>,
+    pub input_names: Vec<String>,
+    pub output_names: Vec<String>,
     pub usb_info: Option<UsbDeviceInfo>,
 }
 
@@ -58,6 +62,62 @@ pub fn list_devices() -> Result<Vec<ExquisDevice>> {
     let mut input = MidiInput::new("xentool-list-input")?;
     input.ignore(Ignore::None);
     let output = MidiOutput::new("xentool-list-output")?;
+
+    #[cfg(not(windows))]
+    {
+        let usb_devices = list_exquis_usb_devices().unwrap_or_default();
+        let mut groups: BTreeMap<u32, LinuxExquisPorts> = BTreeMap::new();
+
+        for port in input.ports() {
+            let name = input.port_name(&port)?;
+            let Some((client_id, client_name)) = parse_linux_exquis_port(&name) else {
+                continue;
+            };
+            let group = groups.entry(client_id).or_insert_with(|| LinuxExquisPorts {
+                client_name,
+                input_names: Vec::new(),
+                output_names: Vec::new(),
+            });
+            group.input_names.push(name);
+        }
+
+        for port in output.ports() {
+            let name = output.port_name(&port)?;
+            let Some((client_id, client_name)) = parse_linux_exquis_port(&name) else {
+                continue;
+            };
+            let group = groups.entry(client_id).or_insert_with(|| LinuxExquisPorts {
+                client_name,
+                input_names: Vec::new(),
+                output_names: Vec::new(),
+            });
+            group.output_names.push(name);
+        }
+
+        let mut devices = Vec::new();
+        let count = groups.len();
+        for (i, (_, mut group)) in groups.into_iter().enumerate() {
+            group.input_names.sort();
+            group.output_names.sort();
+            let usb_info = match_usb_info(&usb_devices, &group.client_name, i);
+            let display_label = if count > 1 {
+                format!("{} ({})", group.client_name, i + 1)
+            } else {
+                group.client_name.clone()
+            };
+            devices.push(ExquisDevice {
+                number: i + 1,
+                label: display_label,
+                input_name: group.input_names.first().cloned(),
+                output_name: group.output_names.first().cloned(),
+                input_names: group.input_names,
+                output_names: group.output_names,
+                usb_info,
+            });
+        }
+
+        return Ok(devices);
+    }
 
     // Track each Exquis-named port together with its absolute winmm
     // device id (the index into midir's full ports() list). On Windows
@@ -112,6 +172,8 @@ pub fn list_devices() -> Result<Vec<ExquisDevice>> {
             label: display_label,
             input_name: input_pair.map(|(_, n)| n),
             output_name: output_pair.map(|(_, n)| n),
+            input_names: input_pair.as_ref().map(|(_, n)| vec![n.clone()]).unwrap_or_default(),
+            output_names: output_pair.as_ref().map(|(_, n)| vec![n.clone()]).unwrap_or_default(),
             usb_info,
         });
     }
@@ -181,28 +243,38 @@ pub fn send_to_outputs(
 ) -> Result<()> {
     let selected = select_devices(devices, &selection)?;
     for device in selected {
-        let output = MidiOutput::new("xentool-output")?;
-        let Some(target_name) = device.output_name.as_deref() else {
-            bail!("device #{} has no output port", device.number);
+        let target_names: Vec<&str> = if device.output_names.is_empty() {
+            device.output_name.iter().map(String::as_str).collect()
+        } else {
+            device.output_names.iter().map(String::as_str).collect()
         };
-        // Find the Nth matching output port (0-indexed: device.number - 1)
-        let port = find_nth_port_by_name(
-            &output.ports(),
-            |p| output.port_name(p).ok(),
-            target_name,
-            device.number - 1,
-        )
-        .with_context(|| {
-            format!(
-                "failed to find output port `{target_name}` (device #{})",
-                device.number
+        if target_names.is_empty() {
+            bail!("device #{} has no output port", device.number);
+        }
+        for target_name in target_names {
+            let output = MidiOutput::new("xentool-output")?;
+            #[cfg(windows)]
+            let nth = device.number - 1;
+            #[cfg(not(windows))]
+            let nth = 0;
+            let port = find_nth_port_by_name(
+                &output.ports(),
+                |p| output.port_name(p).ok(),
+                target_name,
+                nth,
             )
-        })?;
+            .with_context(|| {
+                format!(
+                    "failed to find output port `{target_name}` (device #{})",
+                    device.number
+                )
+            })?;
 
-        let mut connection = output
-            .connect(&port, "xentool-send")
-            .with_context(|| format!("failed to open output `{target_name}`"))?;
-        connection.send(bytes)?;
+            let mut connection = output.connect(&port, "xentool-send").map_err(|e| {
+                anyhow::anyhow!("failed to open output `{target_name}`: {e}")
+            })?;
+            connection.send(bytes)?;
+        }
     }
     Ok(())
 }
@@ -213,44 +285,81 @@ pub fn open_inputs(
 ) -> Result<Vec<MidiInputConnection<()>>> {
     let mut connections = Vec::new();
     for device in devices {
-        let mut input = MidiInput::new("xentool-input")?;
-        input.ignore(Ignore::None);
-        let Some(target_name) = device.input_name.as_deref() else {
-            continue;
+        let target_names: Vec<&str> = if device.input_names.is_empty() {
+            device.input_name.iter().map(String::as_str).collect()
+        } else {
+            device.input_names.iter().map(String::as_str).collect()
         };
-        // Find the Nth matching input port (0-indexed: device.number - 1)
-        let port = find_nth_port_by_name(
-            &input.ports(),
-            |p| input.port_name(p).ok(),
-            target_name,
-            device.number - 1,
-        )
-        .with_context(|| {
-            format!(
-                "failed to find input port `{target_name}` (device #{})",
-                device.number
+        if target_names.is_empty() {
+            continue;
+        }
+        for (port_idx, target_name) in target_names.into_iter().enumerate() {
+            let mut input = MidiInput::new("xentool-input")?;
+            input.ignore(Ignore::None);
+            #[cfg(windows)]
+            let nth = device.number - 1;
+            #[cfg(not(windows))]
+            let nth = 0;
+            let port = find_nth_port_by_name(
+                &input.ports(),
+                |p| input.port_name(p).ok(),
+                target_name,
+                nth,
             )
-        })?;
-        let tx = tx.clone();
-        let device_number = device.number;
-        let port_name = target_name.to_string();
-        let connection = input.connect(
-            &port,
-            &format!("xentool-input-{}", device.number),
-            move |timestamp, bytes, _| {
-                let _ = tx.send(InputMessage {
-                    _timestamp: timestamp,
-                    device_number,
-                    port_name: port_name.clone(),
-                    bytes: bytes.to_vec(),
-                });
-            },
-            (),
-        )?;
-        connections.push(connection);
+            .with_context(|| {
+                format!(
+                    "failed to find input port `{target_name}` (device #{})",
+                    device.number
+                )
+            })?;
+            let tx = tx.clone();
+            let device_number = device.number;
+            let port_name = target_name.to_string();
+            let connection = input.connect(
+                &port,
+                &format!("xentool-input-{}-{}", device.number, port_idx + 1),
+                move |timestamp, bytes, _| {
+                    let _ = tx.send(InputMessage {
+                        _timestamp: timestamp,
+                        device_number,
+                        port_name: port_name.clone(),
+                        bytes: bytes.to_vec(),
+                    });
+                },
+                (),
+            )
+            .map_err(|e| anyhow::anyhow!(
+                "failed to open input `{target_name}` for device #{}: {e}",
+                device.number
+            ))?;
+            connections.push(connection);
+        }
     }
 
     Ok(connections)
+}
+
+#[cfg(not(windows))]
+#[derive(Debug)]
+struct LinuxExquisPorts {
+    client_name: String,
+    input_names: Vec<String>,
+    output_names: Vec<String>,
+}
+
+#[cfg(not(windows))]
+fn parse_linux_exquis_port(name: &str) -> Option<(u32, String)> {
+    let (client_name, rest) = name.split_once(':')?;
+    if !client_name.eq_ignore_ascii_case("Exquis") {
+        return None;
+    }
+    let (port_label, client_port) = rest.rsplit_once(' ')?;
+    if !port_label.trim_start().starts_with("Exquis MIDI ") {
+        return None;
+    }
+    let (client_id, _port_id) = client_port.split_once(':')?;
+    let client_id = client_id.parse().ok()?;
+    Some((client_id, client_name.to_string()))
 }
 
 fn is_exquis_port(name: &str) -> bool {
@@ -264,11 +373,15 @@ fn find_nth_port_by_name<T: Clone>(
     target_name: &str,
     nth: usize,
 ) -> Option<T> {
-    ports
+    let matches: Vec<T> = ports
         .iter()
         .filter(|p| get_name(p).as_deref() == Some(target_name))
-        .nth(nth)
         .cloned()
+        .collect();
+    matches
+        .get(nth)
+        .cloned()
+        .or_else(|| matches.first().cloned())
 }
 
 #[cfg(not(windows))]

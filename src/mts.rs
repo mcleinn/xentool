@@ -88,7 +88,7 @@ impl MtsMaster {
                 ._lib
                 .get(b"MTS_SetScaleName\0")
                 .context("MTS_SetScaleName not found")?;
-            func(s.as_ptr());
+            func(s.as_bytes_with_nul().as_ptr() as *const i8);
         }
         Ok(())
     }

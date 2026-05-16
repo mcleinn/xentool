@@ -224,11 +224,19 @@ fn cmd_list() -> Result<()> {
         }
         println!(
             "  midi-in: {}",
-            device.input_name.as_deref().unwrap_or("<missing input>")
+            if device.input_names.is_empty() {
+                device.input_name.as_deref().unwrap_or("<missing input>").to_string()
+            } else {
+                device.input_names.join(", ")
+            }
         );
         println!(
             "  midi-out: {}",
-            device.output_name.as_deref().unwrap_or("<missing output>")
+            if device.output_names.is_empty() {
+                device.output_name.as_deref().unwrap_or("<missing output>").to_string()
+            } else {
+                device.output_names.join(", ")
+            }
         );
     }
 
@@ -302,7 +310,6 @@ fn cmd_geometry(
     }
     Ok(())
 }
-
 
 
 

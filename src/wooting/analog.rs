@@ -172,7 +172,7 @@ unsafe fn cstr_to_string(p: *mut c_char) -> String {
     if p.is_null() {
         return String::new();
     }
-    CStr::from_ptr(p).to_string_lossy().into_owned()
+    unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
 }
 
 fn find_analog_dll() -> Result<PathBuf> {

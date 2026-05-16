@@ -114,9 +114,19 @@ Either script will offer to install:
 3. The **xenharm** Python sidecar (microtonal note glyphs in the HUD).
 4. **SuperCollider** with the matching bundled patch.
 5. The matching **studio web UI** (tanpura or piano).
-6. `systemd --user` units (`xenharm`, `xentool`, optionally
-   `xentool-supercollider`, optionally `xentool-studio`) so it all
-   starts on boot.
+6. The optional **xentool web editor** service.
+7. `systemd --user` units (`xenharm`, `xentool`, optionally
+   `xentool-supercollider`, optionally `xentool-studio`, optionally
+   `xentool-edit`) so it all starts on boot.
+
+Notes for Linux users:
+
+- On ALSA systems, each physical **Exquis** board may appear as two MIDI
+  ports (`Exquis MIDI 1` and `Exquis MIDI 2`). xentool groups those
+  ports into one logical board automatically.
+- If the installer's Python / `venv` detection picks a Python build that
+  cannot install `xenharmlib`, use a Python 3.12 install with working
+  `venv` support, then re-run the installer.
 
 After install:
 
@@ -124,9 +134,17 @@ After install:
 |--------------------------------------------------|------------------------------------------------------|
 | Open the **Live HUD**                            | <http://localhost:9099/>                             |
 | Open the **studio web UI** (if installed)        | <http://localhost:9100/> (Exquis) · <http://localhost:9101/> (Wooting) |
+| Open the **layout editor** (if installed)        | <http://localhost:8088/>                             |
 | Attach to xentool's **TUI** (detach: `Ctrl-b d`) | `xentool-tui`                                        |
 | Tail logs                                        | `journalctl --user -u xentool -f`                    |
 | Manage the service                               | `systemctl --user {status,restart,stop} xentool`     |
+
+If you front xentool with a reverse proxy, the web UIs work cleanly from
+subpaths as well. Example Caddy paths:
+
+- Live HUD: `/xtn/`
+- Layout editor: `/xtn/edit/`
+- Tanpura studio: `/xtn/studio/`
 
 ### Windows
 

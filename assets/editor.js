@@ -66,7 +66,7 @@ function clearDirty() {
 
 async function populateLayoutSelect() {
   try {
-    const data = await fetch('/api/files').then(r => r.json());
+    const data = await fetch('./api/files').then(r => r.json());
     currentLayoutName = data.current || '';
     layoutSelectEl.innerHTML = '';
     for (const name of data.files) {
@@ -91,7 +91,7 @@ layoutSelectEl.addEventListener('change', async (e) => {
       return;
     }
   }
-  const res = await fetch('/api/load', {
+  const res = await fetch('./api/load', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name: chosen }),
@@ -115,8 +115,8 @@ window.addEventListener('beforeunload', (e) => {
 });
 
 async function loadAll() {
-  geometry = await fetch('/api/geometry').then(r => r.json());
-  layout = await fetch('/api/layout').then(r => r.json());
+  geometry = await fetch('./api/geometry').then(r => r.json());
+  layout = await fetch('./api/layout').then(r => r.json());
   document.getElementById('edo').value = layout.edo ?? '';
   document.getElementById('pitchOffset').value = layout.pitch_offset;
   // View-toggle is visible for both kinds. Global import stays hidden for
@@ -646,7 +646,7 @@ document.getElementById('pitchOffset').addEventListener('change', (e) => {
 });
 
 document.getElementById('save').addEventListener('click', async () => {
-  const res = await fetch('/api/layout', {
+  const res = await fetch('./api/layout', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(layout),
@@ -690,7 +690,7 @@ async function handleImport(file, scope) {
   resetImport();
   const text = await file.text();
   const ext = file.name.split('.').pop().toLowerCase();
-  const res = await fetch('/api/import', {
+  const res = await fetch('./api/import', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content: text, kind: ext }),

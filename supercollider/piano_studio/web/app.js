@@ -156,7 +156,7 @@
 
     function sendNow(v) {
       lastSent = v;
-      postJson('/api/set', { name: cfg.name, value: v }).catch(function () {});
+      postJson('./api/set', { name: cfg.name, value: v }).catch(function () {});
     }
 
     input.addEventListener('input', function () {
@@ -204,7 +204,7 @@
       var v = parseFloat(select.value);
       state[cfg.name] = v;
       refreshVisibility();
-      postJson('/api/set', { name: cfg.name, value: v }).catch(function () {});
+      postJson('./api/set', { name: cfg.name, value: v }).catch(function () {});
     });
 
     valueRefHolder[cfg.name] = function (newVal) {
@@ -302,14 +302,14 @@
 
   function setupActions() {
     onClick('btnSave', function () {
-      postJson('/api/save', {}).then(function (res) {
+      postJson('./api/save', {}).then(function (res) {
         if (res.ok) toast('saved → ' + res.filename);
       });
     });
 
     onClick('btnMakeDefault', function () {
       if (!confirm('Save current settings as the auto-loaded default for next startup?')) return;
-      postJson('/api/save-default', {}).then(function (res) {
+      postJson('./api/save-default', {}).then(function (res) {
         if (res && res.ok) {
           toast('current state is now the default');
         } else {
@@ -322,7 +322,7 @@
 
     onClick('btnReset', function () {
       if (!confirm('Reset all parameters to defaults?')) return;
-      postJson('/api/reset', {}).then(function (res) {
+      postJson('./api/reset', {}).then(function (res) {
         if (res.ok) {
           applyState(res.state);
           toast('reset to defaults');
@@ -332,8 +332,8 @@
 
     onClick('btnFactoryReset', function () {
       if (!confirm('Factory reset?\n\nThis deletes presets/_default.json (your saved default) and resets all parameters to the SC patch\'s factory values. Saved presets are kept.')) return;
-      postJson('/api/clear-default', {}).then(function () {
-        return postJson('/api/reset', {});
+      postJson('./api/clear-default', {}).then(function () {
+        return postJson('./api/reset', {});
       }).then(function (res) {
         if (res && res.ok) {
           applyState(res.state);
@@ -347,7 +347,7 @@
     });
 
     onClick('btnLoad', function () {
-      getJson('/api/presets').then(function (res) {
+      getJson('./api/presets').then(function (res) {
         renderPresetList(res.presets || []);
         $('loadOverlay').hidden = false;
       });
@@ -374,7 +374,7 @@
       li.appendChild(when);
       li.appendChild(note);
       li.addEventListener('click', function () {
-        postJson('/api/load', { filename: p.filename }).then(function (res) {
+        postJson('./api/load', { filename: p.filename }).then(function (res) {
           if (res.ok) {
             applyState(res.state);
             toast('loaded ' + p.filename);
@@ -391,7 +391,7 @@
   function init() {
     renderSections();
     setupActions();
-    getJson('/api/state').then(function (res) {
+    getJson('./api/state').then(function (res) {
       defaults = res.defaults || {};
       applyState(res.state || {});
     });

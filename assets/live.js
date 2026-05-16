@@ -774,7 +774,7 @@
     });
   }
 
-  var es = new EventSource('/api/live/stream');
+  var es = new EventSource('./api/live/stream');
   es.addEventListener('state', function (ev) {
     try {
       var obj = JSON.parse(ev.data || 'null');

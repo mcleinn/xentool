@@ -265,6 +265,8 @@ mod tests {
             label: format!("Exquis ({number})"),
             input_name: Some("Exquis".to_string()),
             output_name: Some("Exquis".to_string()),
+            input_names: vec!["Exquis".to_string()],
+            output_names: vec!["Exquis".to_string()],
             usb_info: Some(UsbDeviceInfo {
                 product_name: Some("Exquis".to_string()),
                 manufacturer: Some("Intuitive Instruments".to_string()),
@@ -431,4 +433,3 @@ mod tests {
         assert_eq!(pin(&new_config, "board2").as_deref(), Some("Z"));
     }
 }
-

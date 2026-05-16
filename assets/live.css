@@ -2,13 +2,13 @@
    auto-fit centered Unicode-glyph line, four tiny corner status fields,
    and an intervals/chord-name area below the main text.
 
-   Bravura.otf is served from xentool itself at /Bravura.otf (embedded via
+   Bravura.otf is served from xentool itself at ./Bravura.otf (embedded via
    include_bytes!). The font's SMuFL Private Use codepoints (E260-E2DD)
    render the up/down arrow accidentals that xenharm_service emits. */
 
 @font-face {
   font-family: 'Bravura';
-  src: url('/Bravura.otf') format('opentype');
+  src: url('./Bravura.otf') format('opentype');
   font-display: swap;
 }
 
