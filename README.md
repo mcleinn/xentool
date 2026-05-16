@@ -127,6 +127,11 @@ Notes for Linux users:
 - If the installer's Python / `venv` detection picks a Python build that
   cannot install `xenharmlib`, use a Python 3.12 install with working
   `venv` support, then re-run the installer.
+- On Linux, the **Wooting** backend can optionally mirror its outgoing MIDI
+  stream to a JACK MIDI port for MODEP / other JACK hosts:
+  `xentool serve mylayout.wtn --jack-midi-mirror`
+  The normal xentool virtual MIDI port remains active; the JACK port is an
+  extra mirror, not a replacement.
 
 After install:
 
@@ -299,6 +304,11 @@ reads from that port can be the audio engine.
 |----------|-------------------------------------------------------------|-------------------------------------------------------:|------------------------------------------------------------------------------------------|
 | Exquis   | any **MPE-capable** synth                                   | **±16 semitones** *(must match `--pb-range`)*          | per-note pitch-bend injected before each note-on                                         |
 | Wooting  | any **MTS-ESP master client with multichannel tuning**      | user's choice (e.g. ±2 for piano, ±12 for organ)       | xentool registers as MTS-ESP master and pushes a 16×128 multichannel tuning table        |
+
+On Linux, `xentool serve file.wtn --jack-midi-mirror` also creates a JACK
+MIDI output named `Xentool Wooting` so MODEP / JACK hosts can subscribe
+directly, while the normal xentool virtual MIDI port stays available for
+ALSA-seq clients.
 
 For the **Exquis** flow, point any MPE synth (Pianoteq, Equator2,
 MPE-aware Surge XT, amsynth_multichannel, …) at xentool's MIDI output

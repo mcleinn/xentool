@@ -30,6 +30,62 @@ use crate::wooting::ui::{
 };
 use crate::wooting::wtn::{Wtn, WtnCell, parse_wtn};
 
+#[cfg(target_os = "linux")]
+mod jack_midi {
+    use std::sync::{Arc, Mutex};
+
+    use anyhow::{Context, Result};
+    use crossbeam_channel::{Receiver, Sender, bounded};
+    use jack::{AsyncClient, Client, ClientOptions, Control, MidiOut, NotificationHandler, Port, ProcessHandler, ProcessScope, RawMidi};
+
+    struct Notifications;
+    impl NotificationHandler for Notifications {}
+
+    struct Handler {
+        port: Port<MidiOut>,
+        rx: Receiver<Vec<u8>>,
+    }
+
+    impl ProcessHandler for Handler {
+        fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
+            let mut writer = self.port.writer(ps);
+            while let Ok(msg) = self.rx.try_recv() {
+                let _ = writer.write(&RawMidi { time: 0, bytes: &msg });
+            }
+            Control::Continue
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct JackMidiOut {
+        tx: Sender<Vec<u8>>,
+        _client: Arc<Mutex<AsyncClient<Notifications, Handler>>>,
+    }
+
+    impl JackMidiOut {
+        pub fn open(client_name: &str, port_name: &str) -> Result<Self> {
+            let (client, _status) = Client::new(client_name, ClientOptions::NO_START_SERVER)
+                .context("connecting to JACK")?;
+            let port = client
+                .register_port(port_name, MidiOut::default())
+                .context("registering JACK MIDI output port")?;
+            let (tx, rx) = bounded::<Vec<u8>>(4096);
+            let handler = Handler { port, rx };
+            let active = client
+                .activate_async(Notifications, handler)
+                .context("activating JACK MIDI client")?;
+            Ok(Self {
+                tx,
+                _client: Arc::new(Mutex::new(active)),
+            })
+        }
+
+        pub fn send(&self, bytes: &[u8]) {
+            let _ = self.tx.try_send(bytes.to_vec());
+        }
+    }
+}
+
 // --- Tunables ---
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 const HOTPLUG_INTERVAL: Duration = Duration::from_millis(500);
@@ -116,6 +172,8 @@ struct DeviceState {
 
 struct MidiOut {
     conn: MidiOutputConnection,
+    #[cfg(target_os = "linux")]
+    jack: Option<jack_midi::JackMidiOut>,
 }
 
 impl MidiOut {
@@ -123,20 +181,51 @@ impl MidiOut {
     /// other apps subscribe to (xenwooting's "XenWTN" pattern). On
     /// Windows: connects to an existing virtual cable (loopMIDI Port by
     /// default). See `crate::midi_out` for the platform branch.
-    fn open(name: &str) -> Result<Self> {
+    fn open(name: &str, jack_midi_mirror: bool) -> Result<Self> {
         let conn = crate::midi_out::open_output("xentool-wooting", name)?;
-        Ok(Self { conn })
+        #[cfg(target_os = "linux")]
+        let jack = if jack_midi_mirror {
+            match jack_midi::JackMidiOut::open("xentool-wooting-jack", "Xentool Wooting") {
+                Ok(client) => {
+                    eprintln!("xentool: JACK MIDI mirror active on port `Xentool Wooting`");
+                    Some(client)
+                }
+                Err(err) => {
+                    eprintln!("xentool: JACK MIDI mirror unavailable ({err:#}); continuing with the normal virtual MIDI port only");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        Ok(Self {
+            conn,
+            #[cfg(target_os = "linux")]
+            jack,
+        })
+    }
+    fn mirror(&self, bytes: &[u8]) {
+        #[cfg(target_os = "linux")]
+        if let Some(jack) = &self.jack {
+            jack.send(bytes);
+        }
     }
     fn note_on(&mut self, ch: u8, note: u8, vel: u8) -> Result<()> {
-        self.conn.send(&[0x90 | (ch & 0x0F), note & 0x7F, vel & 0x7F])?;
+        let msg = [0x90 | (ch & 0x0F), note & 0x7F, vel & 0x7F];
+        self.conn.send(&msg)?;
+        self.mirror(&msg);
         Ok(())
     }
     fn note_off(&mut self, ch: u8, note: u8) -> Result<()> {
-        self.conn.send(&[0x80 | (ch & 0x0F), note & 0x7F, 0])?;
+        let msg = [0x80 | (ch & 0x0F), note & 0x7F, 0];
+        self.conn.send(&msg)?;
+        self.mirror(&msg);
         Ok(())
     }
     fn poly_pressure(&mut self, ch: u8, note: u8, pressure: u8) -> Result<()> {
-        self.conn.send(&[0xA0 | (ch & 0x0F), note & 0x7F, pressure & 0x7F])?;
+        let msg = [0xA0 | (ch & 0x0F), note & 0x7F, pressure & 0x7F];
+        self.conn.send(&msg)?;
+        self.mirror(&msg);
         Ok(())
     }
     fn pitch_bend(&mut self, ch: u8, bend: i32) -> Result<()> {
@@ -144,16 +233,22 @@ impl MidiOut {
         let v = (bend + 8192).clamp(0, 16383) as u16;
         let lsb = (v & 0x7F) as u8;
         let msb = ((v >> 7) & 0x7F) as u8;
-        self.conn.send(&[0xE0 | (ch & 0x0F), lsb, msb])?;
+        let msg = [0xE0 | (ch & 0x0F), lsb, msb];
+        self.conn.send(&msg)?;
+        self.mirror(&msg);
         Ok(())
     }
     fn cc(&mut self, ch: u8, cc: u8, value: u8) -> Result<()> {
-        self.conn.send(&[0xB0 | (ch & 0x0F), cc & 0x7F, value & 0x7F])?;
+        let msg = [0xB0 | (ch & 0x0F), cc & 0x7F, value & 0x7F];
+        self.conn.send(&msg)?;
+        self.mirror(&msg);
         Ok(())
     }
     fn all_notes_off(&mut self) {
         for ch in 0u8..16 {
-            let _ = self.conn.send(&[0xB0 | ch, 123, 0]);
+            let msg = [0xB0 | ch, 123, 0];
+            let _ = self.conn.send(&msg);
+            self.mirror(&msg);
         }
     }
 }
@@ -603,6 +698,7 @@ pub fn cmd_serve_wtn(
     xenharm_url: String,
     osc_port: u16,
     tune_supercollider: bool,
+    jack_midi_mirror: bool,
     settings: &WootingSettings,
 ) -> Result<()> {
     let content = std::fs::read_to_string(&file)
@@ -664,7 +760,7 @@ pub fn cmd_serve_wtn(
     publish_tuning(&master, edo, wtn.pitch_offset)?;
 
     // MIDI output.
-    let mut midi = MidiOut::open(&midi_port)?;
+    let mut midi = MidiOut::open(&midi_port, jack_midi_mirror)?;
 
     // RGB worker + lazy-init Analog SDK.
     let (rgb_tx, rgb_rx) = unbounded::<RgbCmd>();

@@ -53,6 +53,7 @@ fn main() -> Result<()> {
             xenharm_url,
             osc_port,
             tune_supercollider,
+            jack_midi_mirror,
             color,
         } => {
             let s = settings::load();
@@ -72,9 +73,12 @@ fn main() -> Result<()> {
             };
             if is_wtn(&file) {
                 let output = output.unwrap_or_else(|| cli::DEFAULT_OUTPUT_WOOTING.to_string());
-                wooting::commands::cmd_serve_wtn(file, output, hud, hud_port, xenharm_url, osc_port, tune_supercollider, &s.wooting)
+                wooting::commands::cmd_serve_wtn(file, output, hud, hud_port, xenharm_url, osc_port, tune_supercollider, jack_midi_mirror, &s.wooting)
             } else {
                 let output = output.unwrap_or_else(|| cli::DEFAULT_OUTPUT_EXQUIS.to_string());
+                if jack_midi_mirror {
+                    eprintln!("xentool: ignoring --jack-midi-mirror for Exquis; it only applies to the Wooting backend");
+                }
                 cmd_serve(file, pb_range, x_gain, output, mts_esp, hud, hud_port, xenharm_url, osc_port, tune_supercollider, color.to_correction()?)
             }
         }
@@ -310,7 +314,6 @@ fn cmd_geometry(
     }
     Ok(())
 }
-
 
 
 

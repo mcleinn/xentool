@@ -141,6 +141,12 @@ pub enum Commands {
         /// client.
         #[arg(long)]
         tune_supercollider: bool,
+        /// Linux/Wooting only: also mirror the outgoing MIDI stream to a JACK
+        /// MIDI output port (named `Xentool Wooting`) so JACK hosts like MODEP
+        /// can subscribe directly. The normal virtual ALSA/CoreMIDI/loopMIDI
+        /// output remains active.
+        #[arg(long)]
+        jack_midi_mirror: bool,
         #[command(flatten)]
         color: ColorCorrectionArgs,
     },

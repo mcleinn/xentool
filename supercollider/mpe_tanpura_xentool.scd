@@ -201,24 +201,27 @@ s.waitForBoot({
     };
     "===========================".postln;
 
-    // Pick the virtual MIDI port that xentool writes to. Matches the device
-    // or port name (case-insensitive) against any substring in
-    // ~xentoolPortMatches. Defaults cover the canonical xentool outputs on
-    // both platforms: "loopMIDI Port" on Windows; "Xentool Wooting" /
-    // "Xentool Exquis MPE" on Linux/macOS (xentool publishes its own
-    // virtual ALSA seq / CoreMIDI port). The legacy "Midi Through" entry
-    // is kept so old installs that override --output to it still work.
-    // If you run xentool with `--output` set to something else, prepend
-    // your port name here.
-    ~xentoolPortMatches = ["xentool", "loopmidi", "midi through", "midithrough"];
+    // Pick the virtual MIDI port that xentool writes to. Prefer an explicit
+    // xentool / loopMIDI port when present; only fall back to Midi Through for
+    // older manual Linux setups that still route xentool there.
+    ~preferredPortMatches = ["xentool", "loopmidi"];
+    ~fallbackPortMatches = ["midi through", "midithrough"];
     ~xentoolUid = MIDIClient.sources.detect({ |src|
         var dev = src.device.toLower, nam = src.name.toLower;
-        ~xentoolPortMatches.any({ |m| dev.contains(m) or: { nam.contains(m) } })
+        ~preferredPortMatches.any({ |m| dev.contains(m) or: { nam.contains(m) } })
     }) !? { |src| src.uid };
+    if(~xentoolUid.isNil) {
+        ~xentoolUid = MIDIClient.sources.detect({ |src|
+            var dev = src.device.toLower, nam = src.name.toLower;
+            ~fallbackPortMatches.any({ |m| dev.contains(m) or: { nam.contains(m) } })
+        }) !? { |src| src.uid };
+    };
 
     if(~xentoolUid.isNil) {
         "".postln;
-        "[!] No MIDI source matching any of % found.".format(~xentoolPortMatches).postln;
+        "[!] No MIDI source matching preferred % or fallback % found.".format(
+            ~preferredPortMatches, ~fallbackPortMatches
+        ).postln;
         "[!] Start `xentool serve` first. On Windows, install loopMIDI and create a port named 'loopMIDI Port'.".postln;
         "[!] On Linux, xentool defaults to 'Midi Through' (always present via snd-seq).".postln;
     } {

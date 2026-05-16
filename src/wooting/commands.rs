@@ -124,9 +124,10 @@ pub fn cmd_serve_wtn(
     xenharm_url: String,
     osc_port: u16,
     tune_supercollider: bool,
+    jack_midi_mirror: bool,
     settings: &WootingSettings,
 ) -> Result<()> {
-    serve::cmd_serve_wtn(file, midi_port, hud, hud_port, xenharm_url, osc_port, tune_supercollider, settings)
+    serve::cmd_serve_wtn(file, midi_port, hud, hud_port, xenharm_url, osc_port, tune_supercollider, jack_midi_mirror, settings)
 }
 
 /// Pretty-print connected Wootings for `xentool list`. Silently returns empty
