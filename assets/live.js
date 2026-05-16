@@ -162,9 +162,9 @@
   }
   // Bare note name without any octave numeral. Used as the building
   // block for pitchLabelHtml, which appends the octave as a superscript.
-  // Falling back: 12-EDO returns "C" / "D♯" / etc. (no octave digit);
-  // other EDOs without a xenharm glyph return "p14" — debug-y, but at
-  // least won't collide with the appended `<sup>`.
+  // Falling back: 12-EDO returns "C" / "D♯" / etc.; other EDOs without
+  // a xenharm glyph return the bare pitch class as a number — a number
+  // is unambiguously the pc.
   function bareNoteName(p, edo) {
     var idx = noteVariantIndex[p] || 0;
     var glyph = formatNoteUnicode(noteNameFor(edo, p), idx);
@@ -172,7 +172,16 @@
     if (typeof p !== 'number' || !isFinite(p)) return String(p);
     if (typeof edo !== 'number' || edo <= 0) return String(p);
     if (edo === 12) return EDO12_NAMES[mod(p, 12)];
-    return 'p' + mod(p, edo);
+    return String(mod(p, edo));
+  }
+  // True iff xenharm has supplied a real glyph for this pitch. The
+  // chord/secondary line uses this to decide whether to append the
+  // `(pc⁴)` parenthetical: the parens are informative against an
+  // unfamiliar glyph but redundant when the bare name is itself the pc
+  // (pure number) or a standard 12-EDO letter.
+  function hasXenharmGlyph(edo, p) {
+    var v = noteNameFor(edo, p);
+    return !!(v && v.unicode);
   }
   // HTML form of the note label: bare name + superscript octave.
   // Callers assign to innerHTML, not textContent.
@@ -198,7 +207,19 @@
       .replace(/'/g, '&#39;');
   }
 
+  // fitText alternates writes (`fontSize`) with reads (`scrollWidth` /
+  // `scrollHeight`) inside a loop, which forces a full layout reflow on every
+  // iteration. Up to ~80 reflows per call → 50–150 ms of synchronous work per
+  // render on modest hardware. We cache the last (text, container size, edge
+  // budgets) → fitted size, so identical re-renders short-circuit and the
+  // SSE pipeline doesn't pile up.
+  var fitTextCache = null;
   function fitText(el, container, startPx, minPx) {
+    var key = el.innerHTML + '|' + container.clientWidth + 'x' + container.clientHeight + '|' + startPx + ',' + minPx;
+    if (fitTextCache && fitTextCache.key === key) {
+      el.style.fontSize = fitTextCache.size + 'px';
+      return;
+    }
     var size = startPx;
     el.style.fontSize = size + 'px';
     var maxW = container.clientWidth * 0.96;
@@ -208,6 +229,7 @@
       size -= 2;
       el.style.fontSize = size + 'px';
     }
+    fitTextCache = { key: key, size: size };
   }
 
   // ---------- DOM refs ----------
@@ -316,7 +338,10 @@
       var rootHtml = pitchLabelHtml(rootPitch, edo);
       var deltas = uniqSorted(pressed.map(function (p) { return mod(p - rootPitch, edo); }))
         .filter(function (d) { return d !== 0; });
-      var parts = [rootHtml + ' (' + pcOctHtml(rootPitch, edo) + ')'].concat(
+      var rootDisplay = hasXenharmGlyph(edo, rootPitch)
+        ? (rootHtml + ' (' + pcOctHtml(rootPitch, edo) + ')')
+        : rootHtml;
+      var parts = [rootDisplay].concat(
         deltas.map(function (d) { return '+' + d; })
       );
       return parts.join(' ');
@@ -371,18 +396,18 @@
       var r = roots[k];
       var rootPitch = rootPitchByPc[r.rootPc];
       // HTML — bare note name + superscript octave when we have a real
-      // pressed pitch; plain `pcN` fallback otherwise. Either form is
-      // safe to drop straight into innerHTML downstream.
+      // pressed pitch; plain pc number otherwise. Either form is safe to
+      // drop straight into innerHTML downstream.
       var rootName = rootPitch !== undefined
         ? pitchLabelHtml(rootPitch, edo)
-        : ('pc' + r.rootPc);
-      // "pc/octave" tag used inside the chord-line parens; falls back to
-      // pc-only if no concrete pressed pitch maps to this rootPc (rare,
-      // happens when chord templates synthesise extra rotations).
-      // HTML form so the octave renders as a subscript.
+        : String(r.rootPc);
+      // "pc/octave" tag used inside the chord-line parens. Only carried
+      // through when `showPcOct` is true — i.e. when the bare note name is
+      // a real xenharm glyph and the parenthetical pc/oct adds info.
       var rootPcOct = rootPitch !== undefined
         ? pcOctHtml(rootPitch, edo)
         : String(r.rootPc);
+      var showPcOct = rootPitch !== undefined && hasXenharmGlyph(edo, rootPitch);
       var rel = (Array.isArray(r.rel) && r.rel.length)
         ? r.rel
         : pitchClasses.map(function (pc) { return mod(pc - r.rootPc, edo); }).sort(function (a, b) { return a - b; });
@@ -401,6 +426,7 @@
         rootPc: r.rootPc,
         rootPcOct: rootPcOct,
         rootName: rootName,
+        showPcOct: showPcOct,
         pattern: r.pattern || '',
         deltaText: deltaText,
         bestName: best,
@@ -484,8 +510,12 @@
       var it = lines[i];
       // `rootName` and `rootPcOct` are HTML fragments (note name with
       // a superscript octave); `deltaText` is plain text and needs
-      // escaping. Assign with innerHTML below.
-      var title = it.rootName + '(' + it.rootPcOct + ')';
+      // escaping. Assign with innerHTML below. Parens only shown when
+      // a xenharm glyph is in play — otherwise the bare name already
+      // *is* the pc number, so the parenthetical is redundant noise.
+      var title = it.showPcOct
+        ? (it.rootName + '(' + it.rootPcOct + ')')
+        : it.rootName;
       var deltaHtml = escapeHtml(it.deltaText);
       var moreCount = Math.max(0, it.allNames.length - (it.bestName ? 1 : 0));
       var showMore = view !== 'intervals' && moreCount > 0;
@@ -720,6 +750,30 @@
       'note_names cached: ' + (obj.note_names ? Object.keys(obj.note_names).length : 0);
   }
 
+  // SSE events arrive at the publisher rate (~25 Hz) but `render()` is
+  // expensive enough that processing each one synchronously starves the JS
+  // event loop on fast play, producing the "stuck note" + multi-second lag
+  // symptom. We coalesce: every incoming event updates `pendingState`, and
+  // we schedule a single requestAnimationFrame to render whatever's latest
+  // when the frame fires. Multiple events between frames collapse into one
+  // render that always uses the freshest snapshot — so a release that
+  // happened mid-queue can never be visually "stuck" by an older event
+  // sitting in the queue behind it.
+  var pendingState = null;
+  var renderScheduled = false;
+  function scheduleRender() {
+    if (renderScheduled) return;
+    renderScheduled = true;
+    requestAnimationFrame(function () {
+      renderScheduled = false;
+      var obj = pendingState;
+      pendingState = null;
+      if (!obj) return;
+      live = obj;
+      render();
+    });
+  }
+
   var es = new EventSource('/api/live/stream');
   es.addEventListener('state', function (ev) {
     try {
@@ -735,9 +789,9 @@
         noteVariantIndex = Object.create(null);
         lastLayoutId = newLayoutId;
       }
-      live = obj;
+      pendingState = obj;
       debugLog(obj);
-      render();
+      scheduleRender();
     } catch (_) {
       // ignore malformed events
     }
