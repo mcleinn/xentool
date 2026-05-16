@@ -204,7 +204,7 @@ s.waitForBoot({
     // Pick the virtual MIDI port that xentool writes to. Prefer an explicit
     // xentool / loopMIDI port when present; only fall back to Midi Through for
     // older manual Linux setups that still route xentool there.
-    ~preferredPortMatches = ["xentool", "loopmidi"];
+    ~preferredPortMatches = ["xentool-serve", "xentool exquis", "loopmidi"];
     ~fallbackPortMatches = ["midi through", "midithrough"];
     ~xentoolUid = MIDIClient.sources.detect({ |src|
         var dev = src.device.toLower, nam = src.name.toLower;

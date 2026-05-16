@@ -39,6 +39,7 @@ rosc = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 jack = "0.11"
+alsa = "0.9"
 
 [dev-dependencies]
 assert_matches = "1.5"

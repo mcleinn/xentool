@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+#[cfg(not(target_os = "linux"))]
 use midir::MidiOutputConnection;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -171,18 +172,24 @@ struct DeviceState {
 // --- MIDI output ---
 
 struct MidiOut {
+    #[cfg(target_os = "linux")]
+    conn: crate::midi_out::HwMidiOut,
+    #[cfg(not(target_os = "linux"))]
     conn: MidiOutputConnection,
     #[cfg(target_os = "linux")]
     jack: Option<jack_midi::JackMidiOut>,
 }
 
 impl MidiOut {
-    /// On Linux/macOS: creates a virtual ALSA seq / CoreMIDI port that
-    /// other apps subscribe to (xenwooting's "XenWTN" pattern). On
-    /// Windows: connects to an existing virtual cable (loopMIDI Port by
-    /// default). See `crate::midi_out` for the platform branch.
+    /// On Linux: creates an ALSA seq client with hardware-type ports so JACK's
+    /// `-X seq` marks them physical and MODEP can see the device. On macOS:
+    /// virtual CoreMIDI port. On Windows: connects to loopMIDI.
     fn open(name: &str, jack_midi_mirror: bool) -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        let conn = crate::midi_out::open_output_bidirectional("xentool-wooting", name)?;
+        #[cfg(not(target_os = "linux"))]
         let conn = crate::midi_out::open_output("xentool-wooting", name)?;
+
         #[cfg(target_os = "linux")]
         let jack = if jack_midi_mirror {
             match jack_midi::JackMidiOut::open("xentool-wooting-jack", "Xentool Wooting") {
