@@ -53,19 +53,29 @@ s.waitForBoot({
         droneAmt=1.0, droneType=0,      // 0=CombL, 1=Sine, 2=Off
         pressSwellLo=1.0, pressSwellHi=1.0,
         yMode=5, yRate=5,               // 0=LPF, 1=Trem, 2=Leslie, 3=Chorus, 4=Vibrato, 5=Off
-        leslieMin=0.7, leslieMax=7.0|
+        leslieMin=0.7, leslieMax=7.0,
+        yMin=0, yCenter=0.5, yMax=1, yPitchTrack=0, yPitchRefHz=261.6|
 
         var hammer, strings, pianoSig, organSig, rhodesSig, sig, env;
         var pressSm, brightSm, sustainEx, sustain;
         var bendRatio, freqSm;
         var rhodesAttack, leslieLfo;
-        var yLpfSig, yTremSig, yLeslieSig, yChorusSig, yVibSig;
+        var yLpfSig, yTremSig, yLeslieSig, yChorusSig, yVibSig, yMapped, yEff;
 
         // Smoothed expression: kill .set() zipper noise.
         bendRatio = (2 ** (bend / 12)).lag(0.025);
         freqSm    = freq * bendRatio;
         brightSm  = bright.lag(0.10);
         pressSm   = press.lag(0.08);
+
+        // Y-axis input mapping: 3-point Bezier (yMin → yCenter → yMax) +
+        // pitch-tracked attenuation. Used by post-synth Y branches only;
+        // brightSm continues to drive timbral things (organ harmonics, Rhodes
+        // bell). Defaults (0, 0.5, 1, 0) collapse to yEff = brightSm.
+        yMapped = ((1 - brightSm).squared * yMin)
+                + (2 * (1 - brightSm) * brightSm * ((2 * yCenter) - (0.5 * yMin) - (0.5 * yMax)))
+                + (brightSm.squared * yMax);
+        yEff = (yMin + ((yMapped - yMin) * (1 - (yPitchTrack * (freqSm / yPitchRefHz).log2.max(0) / 4)))).clip(0, 1);
 
         // === Piano voice (Pluck/Karplus-Strong + soundboard) ===
         // Three slightly-detuned strings give the natural piano chorus.
@@ -130,13 +140,13 @@ s.waitForBoot({
         //   3 = Chorus (organ/EP shimmer; Y drives mod depth)
         //   4 = Vibrato (delay-line pitch mod at yRate Hz)
         //   5 = Off (no post-synth effect)
-        yLpfSig    = LPF.ar(sig, brightSm.linexp(0, 1, 250, 12000).clip(20, 18000));
-        yTremSig   = sig * SinOsc.kr(yRate).range(1 - (brightSm * 0.6), 1);
-        leslieLfo  = SinOsc.kr(brightSm.linlin(0, 1, leslieMin, leslieMax));
+        yLpfSig    = LPF.ar(sig, yEff.linexp(0, 1, 250, 12000).clip(20, 18000));
+        yTremSig   = sig * SinOsc.kr(yRate).range(1 - (yEff * 0.6), 1);
+        leslieLfo  = SinOsc.kr(yEff.linlin(0, 1, leslieMin, leslieMax));
         yLeslieSig = sig * leslieLfo.range(0.75, 1.0)
                      + (DelayC.ar(sig, 0.02, leslieLfo.range(0.001, 0.005)) * 0.5);
-        yChorusSig = sig + (DelayC.ar(sig, 0.03, SinOsc.kr(0.6).range(0.005, 0.020) * brightSm) * 0.5);
-        yVibSig    = DelayC.ar(sig, 0.01, 0.005 + (SinOsc.kr(yRate).range(-1, 1) * 0.003 * brightSm));
+        yChorusSig = sig + (DelayC.ar(sig, 0.03, SinOsc.kr(0.6).range(0.005, 0.020) * yEff) * 0.5);
+        yVibSig    = DelayC.ar(sig, 0.01, 0.005 + (SinOsc.kr(yRate).range(-1, 1) * 0.003 * yEff));
 
         sig = Select.ar(yMode, [yLpfSig, yTremSig, yLeslieSig, yChorusSig, yVibSig, sig]);
 
@@ -243,6 +253,12 @@ s.waitForBoot({
         yRate:          5.0,
         leslieMin:      0.7,
         leslieMax:      7.0,
+        // Y-axis mapping (Bezier shape + pitch attenuation; defaults = identity)
+        yMin:           0,      // effect output at brightSm=0
+        yCenter:        0.5,    // effect output at brightSm=0.5
+        yMax:           1,      // effect output at brightSm=1
+        yPitchTrack:    0,      // 0=off, 1=full attenuation 4 octaves above ref
+        yPitchRefHz:    261.6,  // pitch reference (Hz) above which attenuation kicks in
         // Output
         reverbMix:      0.18,
         reverbRoom:     0.72,
@@ -317,7 +333,12 @@ s.waitForBoot({
                 \yMode,          ~kparams.yMode,
                 \yRate,          ~kparams.yRate,
                 \leslieMin,      ~kparams.leslieMin,
-                \leslieMax,      ~kparams.leslieMax
+                \leslieMax,      ~kparams.leslieMax,
+                \yMin,           ~kparams.yMin,
+                \yCenter,        ~kparams.yCenter,
+                \yMax,           ~kparams.yMax,
+                \yPitchTrack,    ~kparams.yPitchTrack,
+                \yPitchRefHz,    ~kparams.yPitchRefHz
             ]);
         } {
             // velocity-zero noteOn == noteOff per MIDI spec
@@ -457,6 +478,7 @@ s.waitForBoot({
             dampScale: 1.0, brightScale: 1.0, hammerHardness: 100, detuneAmt: 0.003,
             droneAmt: 1.0, droneType: 0, pressSwellLo: 1.0, pressSwellHi: 1.0,
             yMode: 5, yRate: 5.0, leslieMin: 0.7, leslieMax: 7.0,
+            yMin: 0, yCenter: 0.5, yMax: 1, yPitchTrack: 0, yPitchRefHz: 261.6,
             reverbMix: 0.18, reverbRoom: 0.72, masterAmp: 1.0
         );
         defaults.keysValuesDo { |k, v| ~studioApply.value(k.asString, v) };

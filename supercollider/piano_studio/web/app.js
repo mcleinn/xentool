@@ -77,6 +77,18 @@
       ],
     },
     {
+      id: 'y_mapping',
+      title: 'Y-axis mapping',
+      open: true,
+      controls: [
+        { name: 'yMin',        label: 'Effect at Y=0 (low end of Y range)',                 min: 0,  max: 1,    step: 0.01, fmt: v => v.toFixed(2) },
+        { name: 'yCenter',     label: 'Effect at Y=0.5 (curve mid-point)',                  min: 0,  max: 1,    step: 0.01, fmt: v => v.toFixed(2) },
+        { name: 'yMax',        label: 'Effect at Y=1 (high end of Y range)',                min: 0,  max: 1,    step: 0.01, fmt: v => v.toFixed(2) },
+        { name: 'yPitchTrack', label: 'Pitch attenuation (high notes weaken effect)',       min: 0,  max: 1,    step: 0.01, fmt: v => v.toFixed(2) },
+        { name: 'yPitchRefHz', label: 'Pitch reference (Hz; attenuation starts above)',     min: 50, max: 2000, step: 1,    fmt: v => v.toFixed(0) + ' Hz' },
+      ],
+    },
+    {
       id: 'output',
       title: 'Reverb & master',
       open: true,

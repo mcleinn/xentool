@@ -27,17 +27,29 @@
 
 s.waitForBoot({
 
-    SynthDef(\mpeTanpuraXentool, { |freq=220, gate=1, bend=0, bright=0.5, press=0, vel=0.5, decay=11, dampScale=1, brightScale=1, droneAmt=1.0, droneType=0, jawariAmt=0.7, jawariMode=0, jawariDrive=6, jawariCubed=1.4, sympAmt=1, hiShelfFreq=2600, hiShelfMin=(-24), hiShelfMax=24, hiShelfMode=0, loShelfFreq=400, loShelfMin=0, loShelfMax=(-8), loShelfMode=0, yMode=1, pressSwellLo=0.3, pressSwellHi=2.0, limiterThresh=0.6|
+    SynthDef(\mpeTanpuraXentool, { |freq=220, gate=1, bend=0, bright=0.5, press=0, vel=0.5, decay=11, dampScale=1, brightScale=1, droneAmt=1.0, droneType=0, droneHarmGain=1, jawariAmt=0.7, jawariMode=0, jawariDrive=6, jawariCubed=1.4, sympAmt=1, hiShelfFreq=2600, hiShelfMin=(-24), hiShelfMax=24, hiShelfMode=0, loShelfFreq=400, loShelfMin=0, loShelfMax=(-8), loShelfMode=0, yMode=1, pressSwellLo=0.3, pressSwellHi=2.0, limiterThresh=0.6, yMin=0, yCenter=0.5, yMax=1, yPitchTrack=0, yPitchRefHz=261.6|
         var bendRatio, freqSm, brightSm, pressSm, brightMul, ksCoef;
         var burst, string, sig, sigJawari, sigSymp, ampFol, env, sustainEx;
         var droneSig, droneBrightHz, hiShelfSig, hiPeakSig, loShelfSig, loPeakSig;
-        var shelfSig, yLpfSig, yBpfSig, yTremSig, yCombSig;
+        var shelfSig, yLpfSig, yBpfSig, yTremSig, yCombSig, yMapped, yEff;
 
         // Smoothed controls — kill zipper noise on .set
         bendRatio = (2 ** (bend / 12)).lag(0.025);
         freqSm    = freq * bendRatio;
         brightSm  = bright.lag(0.10);
         pressSm   = press.lag(0.08);
+
+        // Y-axis input mapping. Maps brightSm through a 3-point Bezier
+        // (yMin → yCenter → yMax), then attenuates excursion-from-yMin by
+        // pitch (octaves above yPitchRefHz, scaled by yPitchTrack). yEff is
+        // used by the post-synth yMode branches only; brightSm continues to
+        // drive timbral things (burst LPF, KS coef, drone Y morph) so the
+        // source tone is unchanged regardless of yMin/yCenter/yMax.
+        // Defaults (0, 0.5, 1, 0) collapse to yEff = brightSm — bit-identical.
+        yMapped = ((1 - brightSm).squared * yMin)
+                + (2 * (1 - brightSm) * brightSm * ((2 * yCenter) - (0.5 * yMin) - (0.5 * yMax)))
+                + (brightSm.squared * yMax);
+        yEff = (yMin + ((yMapped - yMin) * (1 - (yPitchTrack * (freqSm / yPitchRefHz).log2.max(0) / 4)))).clip(0, 1);
 
         // dampScale (encoder/button cycle) multiplies the KS loop coefficient
         // — bigger value = harder/brighter string. brightScale multiplies the
@@ -56,7 +68,7 @@ s.waitForBoot({
 
         // Z → sustain drone. droneAmt scales the drone amplitude.
         // droneType picks the drone DSP. Indices 0/1/2 are kept stable
-        // for back-compat with saved presets; 3..6 are extras.
+        // for back-compat with saved presets; 3..7 are extras.
         //   0 = CombL feedback delay (v1 default)
         //   1 = Sine + bright-driven harmonic stack (Y morphs sine→4-harmonic)
         //   2 = Off
@@ -64,6 +76,7 @@ s.waitForBoot({
         //   4 = Triangle, post-LPF cutoff driven by Y
         //   5 = Two detuned sines (~7 c) + bright-driven 2nd-harmonic shimmer
         //   6 = Pulse, width and LPF cutoff driven by Y
+        //   7 = Vocal "ahh" (sawtooth through 800/1150/2900 Hz vowel formants + vibrato)
         sustainEx = WhiteNoise.ar(1) * 0.015 * pressSm * droneAmt;
         sustainEx = LPF.ar(sustainEx, freqSm * brightMul);
         // Bright-driven post-LPF cutoff for harmonic-rich oscillators.
@@ -74,10 +87,11 @@ s.waitForBoot({
             CombL.ar(sustainEx, 0.05, freqSm.reciprocal, 4),
             // Sine + brightness-injected harmonics. At bright=0 it's a pure
             // sine; bright=1 stacks 2nd/3rd/4th harmonics with falling weights.
+            // droneHarmGain scales the harmonic contribution (default 1 = v1).
             (SinOsc.ar(freqSm)
-              + (SinOsc.ar(freqSm * 2) * brightSm * 0.5)
-              + (SinOsc.ar(freqSm * 3) * brightSm.squared * 0.3)
-              + (SinOsc.ar(freqSm * 4) * brightSm.squared * 0.2)
+              + (SinOsc.ar(freqSm * 2) * brightSm * 0.5 * droneHarmGain)
+              + (SinOsc.ar(freqSm * 3) * brightSm.squared * 0.3 * droneHarmGain)
+              + (SinOsc.ar(freqSm * 4) * brightSm.squared * 0.2 * droneHarmGain)
             ) * 0.04 * pressSm * droneAmt,
             DC.ar(0),
             LPF.ar(Saw.ar(freqSm), droneBrightHz) * 0.04 * pressSm * droneAmt,
@@ -86,7 +100,18 @@ s.waitForBoot({
               + (SinOsc.ar(freqSm * 1.003) * 0.5)
               + (SinOsc.ar(freqSm * 2) * brightSm * 0.3)
             ) * 0.05 * pressSm * droneAmt,
-            LPF.ar(Pulse.ar(freqSm, brightSm.linlin(0, 1, 0.5, 0.85)), droneBrightHz) * 0.04 * pressSm * droneAmt
+            LPF.ar(Pulse.ar(freqSm, brightSm.linlin(0, 1, 0.5, 0.85)), droneBrightHz) * 0.04 * pressSm * droneAmt,
+            // 7 = Vocal "ahh". Sawtooth source (with 5.5 Hz vibrato) through
+            // three vowel formants tuned for /a/. brightSm widens formant Q so
+            // bright=0 is a covered "uh", bright=1 is an open "ahh".
+            (LPF.ar(
+                Resonz.ar(LFSaw.ar(freqSm * (1 + (SinOsc.kr(5.5).range(-0.008, 0.008)))),
+                          [800, 1150, 2900],
+                          [brightSm.linlin(0, 1, 0.7, 0.4),
+                           brightSm.linlin(0, 1, 0.6, 0.35),
+                           brightSm.linlin(0, 1, 0.5, 0.25)]).sum * 3,
+                5000)
+            ) * 0.04 * pressSm * droneAmt
         ]);
         string = string + droneSig;
 
@@ -118,17 +143,17 @@ s.waitForBoot({
         //   3 = Tremolo (Y → AM depth at ~5 Hz — saz / kanun shimmer)
         //   4 = Pluck-position comb (Y sweeps a short comb — sitar pluck)
         //   5 = Off (Y has no post-synth effect)
-        hiShelfSig = BHiShelf.ar(sig, hiShelfFreq, 1, brightSm.linlin(0, 1, hiShelfMin, hiShelfMax));
-        hiPeakSig  = BPeakEQ.ar(sig, hiShelfFreq, 1, brightSm.linlin(0, 1, hiShelfMin, hiShelfMax));
+        hiShelfSig = BHiShelf.ar(sig, hiShelfFreq, 1, yEff.linlin(0, 1, hiShelfMin, hiShelfMax));
+        hiPeakSig  = BPeakEQ.ar(sig, hiShelfFreq, 1, yEff.linlin(0, 1, hiShelfMin, hiShelfMax));
         shelfSig   = Select.ar(hiShelfMode, [hiShelfSig, hiPeakSig, sig]);
-        loShelfSig = BLowShelf.ar(shelfSig, loShelfFreq, 1, brightSm.linlin(0, 1, loShelfMin, loShelfMax));
-        loPeakSig  = BPeakEQ.ar(shelfSig, loShelfFreq, 1, brightSm.linlin(0, 1, loShelfMin, loShelfMax));
+        loShelfSig = BLowShelf.ar(shelfSig, loShelfFreq, 1, yEff.linlin(0, 1, loShelfMin, loShelfMax));
+        loPeakSig  = BPeakEQ.ar(shelfSig, loShelfFreq, 1, yEff.linlin(0, 1, loShelfMin, loShelfMax));
         shelfSig   = Select.ar(loShelfMode, [loShelfSig, loPeakSig, shelfSig]);
 
-        yLpfSig  = RLPF.ar(sig, brightSm.linexp(0, 1, 200, 8000).clip(20, 18000), 0.3);
-        yBpfSig  = BPF.ar(sig, brightSm.linexp(0, 1, 300, 4000).clip(20, 18000), 0.3) * 4;
-        yTremSig = sig * SinOsc.kr(5).range(1 - (brightSm * 0.6), 1);
-        yCombSig = CombC.ar(sig, 0.01, brightSm.linexp(0, 1, 0.0003, 0.008), 0.4);
+        yLpfSig  = RLPF.ar(sig, yEff.linexp(0, 1, 200, 8000).clip(20, 18000), 0.3);
+        yBpfSig  = BPF.ar(sig, yEff.linexp(0, 1, 300, 4000).clip(20, 18000), 0.3) * 4;
+        yTremSig = sig * SinOsc.kr(5).range(1 - (yEff * 0.6), 1);
+        yCombSig = CombC.ar(sig, 0.01, yEff.linexp(0, 1, 0.0003, 0.008), 0.4);
 
         sig = Select.ar(yMode, [shelfSig, yLpfSig, yBpfSig, yTremSig, yCombSig, sig]);
 
@@ -414,7 +439,8 @@ s.waitForBoot({
         // Studio-controllable extras (see SynthDef args). All defaults
         // reproduce v1 exactly.
         droneAmt:      1.0,
-        droneType:     0,      // 0=CombL, 1=Sine+harm, 2=off, 3=Saw, 4=Tri, 5=Beating, 6=Pulse
+        droneType:     0,      // 0=CombL, 1=Sine+harm, 2=off, 3=Saw, 4=Tri, 5=Beating, 6=Pulse, 7=Vocal
+        droneHarmGain: 1.0,    // Sine+harm only: scales 2nd/3rd/4th harmonic gains (1=v1)
         jawariAmt:     0.7,
         jawariMode:    0,      // 0=tanh+cubed, 1=tanh-only, 2=fold
         jawariDrive:   6,
@@ -431,7 +457,13 @@ s.waitForBoot({
         yMode:         1,      // 0=shelves, 1=RLPF (sitar/sarod wah — factory pick), 2=BPF, 3=tremolo, 4=comb, 5=off
         pressSwellLo:  0.3,
         pressSwellHi:  2.0,
-        limiterThresh: 0.6
+        limiterThresh: 0.6,
+        // Y-axis mapping (Bezier shape + pitch attenuation; defaults = identity)
+        yMin:          0,      // effect output at brightSm=0
+        yCenter:       0.5,    // effect output at brightSm=0.5
+        yMax:          1,      // effect output at brightSm=1
+        yPitchTrack:   0,      // 0=off, 1=full attenuation 4 octaves above ref
+        yPitchRefHz:   261.6   // pitch reference (Hz) above which attenuation kicks in
     );
 
     // Cycle preset banks for the buttons. Index starts at the "classic" slot.
@@ -605,6 +637,7 @@ s.waitForBoot({
                 \brightScale, ~kparams.brightScale,
                 \droneAmt,      ~kparams.droneAmt,
                 \droneType,     ~kparams.droneType,
+                \droneHarmGain, ~kparams.droneHarmGain,
                 \jawariAmt,     ~kparams.jawariAmt,
                 \jawariMode,    ~kparams.jawariMode,
                 \jawariDrive,   ~kparams.jawariDrive,
@@ -621,7 +654,12 @@ s.waitForBoot({
                 \yMode,         ~kparams.yMode,
                 \pressSwellLo,  ~kparams.pressSwellLo,
                 \pressSwellHi,  ~kparams.pressSwellHi,
-                \limiterThresh, ~kparams.limiterThresh
+                \limiterThresh, ~kparams.limiterThresh,
+                \yMin,          ~kparams.yMin,
+                \yCenter,       ~kparams.yCenter,
+                \yMax,          ~kparams.yMax,
+                \yPitchTrack,   ~kparams.yPitchTrack,
+                \yPitchRefHz,   ~kparams.yPitchRefHz
             ]);
             ~logEvent.((
                 t: Main.elapsedTime, kind: \noteOn,
@@ -807,13 +845,14 @@ s.waitForBoot({
         var defaults = (
             decay: 11, reverbMix: 0.45, reverbRoom: 0.88, masterAmp: 1.0,
             dampScale: 1.0, brightScale: 1.0,
-            droneAmt: 1.0, droneType: 0,
+            droneAmt: 1.0, droneType: 0, droneHarmGain: 1.0,
             jawariAmt: 0.7, jawariMode: 0, jawariDrive: 6, jawariCubed: 1.4,
             sympAmt: 1.0,
             hiShelfFreq: 2600, hiShelfMin: -24, hiShelfMax: 24, hiShelfMode: 0,
             loShelfFreq: 400, loShelfMin: 0, loShelfMax: -8, loShelfMode: 0,
             yMode: 1,
-            pressSwellLo: 0.3, pressSwellHi: 2.0, limiterThresh: 0.6
+            pressSwellLo: 0.3, pressSwellHi: 2.0, limiterThresh: 0.6,
+            yMin: 0, yCenter: 0.5, yMax: 1, yPitchTrack: 0, yPitchRefHz: 261.6
         );
         defaults.keysValuesDo { |k, v| ~studioApply.value(k.asString, v) };
         "[studio] reset to defaults".postln;

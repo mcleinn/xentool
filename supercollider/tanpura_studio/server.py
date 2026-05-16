@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -53,7 +55,8 @@ DEFAULTS: dict[str, float] = {
     "masterAmp":     1.0,
     # new studio-exposed kparams
     "droneAmt":      1.0,
-    "droneType":     0.0,    # 0=CombL, 1=Sine+harm, 2=off, 3=Saw, 4=Tri, 5=Beating, 6=Pulse
+    "droneType":     0.0,    # 0=CombL, 1=Sine+harm, 2=off, 3=Saw, 4=Tri, 5=Beating, 6=Pulse, 7=Vocal
+    "droneHarmGain": 1.0,    # Sine+harm only: scales 2nd/3rd/4th harmonic gains
     "jawariAmt":     0.7,
     "jawariMode":    0.0,    # 0=tanh+cubed, 1=tanh-only, 2=fold
     "jawariDrive":   6.0,
@@ -71,6 +74,12 @@ DEFAULTS: dict[str, float] = {
     "pressSwellLo":  0.3,
     "pressSwellHi":  2.0,
     "limiterThresh": 0.6,
+    # Y-axis input mapping (Bezier shape + pitch attenuation; defaults = identity)
+    "yMin":          0.0,
+    "yCenter":       0.5,
+    "yMax":          1.0,
+    "yPitchTrack":   0.0,
+    "yPitchRefHz":   261.6,
 }
 
 # User-default singleton: when present, overrides DEFAULTS at startup and on
@@ -279,6 +288,32 @@ def load_preset():
     return jsonify({"ok": True, "applied": len(flat) // 2, "state": state})
 
 
+def _retry_state_to_sc():
+    """Re-send the in-memory state every 2 s for ~12 s after startup.
+
+    The single fire-and-forget batch in main() races against sclang's boot:
+    if it lands before `thisProcess.openUDPPort(57121)` + the matching
+    `OSCdef(\\studioBatch)` registration, the packet is silently dropped and
+    SC stays at factory `~kparams` until something else pushes (slider drag,
+    Reset, preset load). Re-sending periodically defeats the race — each
+    retry is idempotent on the SC side. The retry sends the CURRENT
+    `state` (snapshotted via `list(state.items())`), so any slider drags
+    that landed between retries are preserved instead of clobbered.
+    """
+    for _ in range(6):
+        time.sleep(2.0)
+        items = list(state.items())
+        flat: list = []
+        for name, value in items:
+            flat.append(name)
+            flat.append(float(value))
+        try:
+            osc.send_message("/tanpura/batch", flat)
+        except Exception:
+            # SC down, OSC unreachable, etc. — keep retrying anyway.
+            pass
+
+
 def main():
     print("=== tanpura_studio ===")
     print(f"  serving:  http://localhost:9100/")
@@ -287,14 +322,15 @@ def main():
     user_default = _load_user_default()
     if user_default:
         print(f"  user default loaded from {USER_DEFAULT_PATH.name} ({len(user_default)} params)")
-        # Fire-and-forget push to SC. If sclang isn't running yet, the
-        # message is silently dropped — `state` is still correct, and the
-        # user can /api/reset (or just play a note) to sync once SC starts.
+        # Fire-and-forget push to SC. The follow-up retry thread re-sends
+        # for ~12 s in case sclang hadn't yet reached its OSC listener
+        # registration when this initial packet arrived.
         flat: list = []
         for name, value in state.items():
             flat.append(name)
             flat.append(float(value))
         osc.send_message("/tanpura/batch", flat)
+        threading.Thread(target=_retry_state_to_sc, daemon=True).start()
     else:
         print(f"  no user default; using factory DEFAULTS")
     app.run(host="127.0.0.1", port=9100, debug=False, use_reloader=False)

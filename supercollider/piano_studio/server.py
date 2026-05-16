@@ -23,6 +23,8 @@ present it's loaded at startup and used by /api/reset.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -68,6 +70,12 @@ DEFAULTS: dict[str, float] = {
     "yRate":          5.0,
     "leslieMin":      0.7,
     "leslieMax":      7.0,
+    # Y-axis input mapping (Bezier shape + pitch attenuation; defaults = identity)
+    "yMin":           0.0,
+    "yCenter":        0.5,
+    "yMax":           1.0,
+    "yPitchTrack":    0.0,
+    "yPitchRefHz":    261.6,
     # Output
     "reverbMix":      0.18,
     "reverbRoom":     0.72,
@@ -256,6 +264,27 @@ def load_preset():
     return jsonify({"ok": True, "applied": len(flat) // 2, "state": state})
 
 
+def _retry_state_to_sc():
+    """Re-send the in-memory state every 2 s for ~12 s after startup.
+
+    Mirrors tanpura_studio's retry: defeats the race between this script's
+    initial OSC batch and sclang's `openUDPPort(57123)` + `OSCdef(\\pianoStudioBatch)`
+    registration. Each retry sends the CURRENT `state` so slider drags
+    that landed between retries are preserved.
+    """
+    for _ in range(6):
+        time.sleep(2.0)
+        items = list(state.items())
+        flat: list = []
+        for name, value in items:
+            flat.append(name)
+            flat.append(float(value))
+        try:
+            osc.send_message("/piano/batch", flat)
+        except Exception:
+            pass
+
+
 def main():
     print("=== piano_studio ===")
     print(f"  serving:  http://localhost:9101/")
@@ -269,6 +298,7 @@ def main():
             flat.append(name)
             flat.append(float(value))
         osc.send_message("/piano/batch", flat)
+        threading.Thread(target=_retry_state_to_sc, daemon=True).start()
     else:
         print(f"  no user default; using factory DEFAULTS")
     app.run(host="127.0.0.1", port=9101, debug=False, use_reloader=False)

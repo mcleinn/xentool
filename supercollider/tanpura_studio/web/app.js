@@ -34,7 +34,9 @@
           { value: 4, text: 'Triangle (Y-filtered)' },
           { value: 5, text: 'Beating sines (~7 c)' },
           { value: 6, text: 'Pulse (Y width + filter)' },
+          { value: 7, text: 'Vocal "ahh" (vowel formants, Y opens vowel)' },
         ]},
+        { name: 'droneHarmGain', label: 'Harmonic gain (Sine+harm Y morph strength)', min: 0, max: 6, step: 0.05, fmt: v => v.toFixed(2), showWhen: s => (s.droneType | 0) === 1 },
       ],
     },
     {
@@ -99,6 +101,18 @@
         { name: 'pressSwellLo',  label: 'Amp swell at press=0', min: 0,   max: 2,   step: 0.01, fmt: v => v.toFixed(2) },
         { name: 'pressSwellHi',  label: 'Amp swell at press=1', min: 0,   max: 4,   step: 0.01, fmt: v => v.toFixed(2) },
         { name: 'limiterThresh', label: 'Limiter threshold',    min: 0.3, max: 1.5, step: 0.01, fmt: v => v.toFixed(2) },
+      ],
+    },
+    {
+      id: 'y_mapping',
+      title: 'Y-axis mapping',
+      open: true,
+      controls: [
+        { name: 'yMin',        label: 'Effect at Y=0 (low end of Y range)',                 min: 0,  max: 1,    step: 0.01, fmt: v => v.toFixed(2) },
+        { name: 'yCenter',     label: 'Effect at Y=0.5 (curve mid-point)',                  min: 0,  max: 1,    step: 0.01, fmt: v => v.toFixed(2) },
+        { name: 'yMax',        label: 'Effect at Y=1 (high end of Y range)',                min: 0,  max: 1,    step: 0.01, fmt: v => v.toFixed(2) },
+        { name: 'yPitchTrack', label: 'Pitch attenuation (high notes weaken effect)',       min: 0,  max: 1,    step: 0.01, fmt: v => v.toFixed(2) },
+        { name: 'yPitchRefHz', label: 'Pitch reference (Hz; attenuation starts above)',     min: 50, max: 2000, step: 1,    fmt: v => v.toFixed(0) + ' Hz' },
       ],
     },
     {
