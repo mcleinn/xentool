@@ -457,7 +457,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$HOME/.cargo/bin/xentool edit "$edit_target" --port ${EDITOR_PORT:-8088} --no-open
+ExecStart=$HOME/.cargo/bin/xentool edit "$edit_target" --port ${EDITOR_PORT:-8088}
 WorkingDirectory=$REPO_ROOT
 Restart=on-failure
 RestartSec=2

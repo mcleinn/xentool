@@ -191,9 +191,9 @@ pub enum Commands {
         /// HTTP port for the editor.
         #[arg(long, default_value_t = 8088)]
         port: u16,
-        /// Do not auto-open the browser.
+        /// Auto-open the editor URL in the default browser after the server starts.
         #[arg(long)]
-        no_open: bool,
+        open: bool,
     },
     /// Set the color of a non-pad control (encoder, button, slider).
     Control {

@@ -104,8 +104,8 @@ fn main() -> Result<()> {
         Commands::Geometry { name, boards, out, no_open } => {
             cmd_geometry(name, boards, out, !no_open)
         }
-        Commands::Edit { file, port, no_open } => {
-            edit::run_edit_server(layouts::resolve_layout_path(&file), port, !no_open)
+        Commands::Edit { file, port, open } => {
+            edit::run_edit_server(layouts::resolve_layout_path(&file), port, open)
         }
         Commands::Control {
             control,

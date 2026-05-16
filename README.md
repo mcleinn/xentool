@@ -318,11 +318,14 @@ on the right edge of the HUD page.
 ```
 xentool edit xtn/edo31.xtn
 xentool edit wtn/edo31.wtn
+xentool edit xtn/edo31.xtn --open    # also auto-open in your default browser
 ```
 
-Opens a web-based editor in your default browser. Each connected /
-configured board renders as a hex panel; Key / Chan / Colour are
-edited in the sidebar. Save writes back to the file.
+Starts a local HTTP editor on port 8088 (override with `--port`).
+Open the URL printed on stdout, or pass `--open` to launch your
+default browser automatically. Each connected / configured board
+renders as a hex panel; Key / Chan / Colour are edited in the
+sidebar. Save writes back to the file.
 
 Import: pick a `.ltn` (Lumatone), `.wtn` (xenwooting), or another
 `.xtn`. Use arrow keys to translate, `R` to rotate 60° around the
