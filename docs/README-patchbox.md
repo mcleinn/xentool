@@ -246,6 +246,13 @@ Wants=xentool-wooting.service
 
 [Service]
 Type=oneshot
+# Stay "active (exited)" after the script completes so that other services
+# with Wants=xentool-wooting-jack-connect.service (e.g. xentool-supercollider,
+# xentool-alsa-out — both need to start AFTER the JACK restart) don't
+# re-trigger this oneshot on every subsequent restart. Without this, each
+# 'systemctl --user restart xentool-supercollider.service' would cascade
+# into a fresh JACK restart, killing scsynth.
+RemainAfterExit=yes
 Environment=JACK_PROMISCUOUS_SERVER=jack
 ExecStart=/home/patch/.local/bin/xentool-wooting-jack-connect
 
