@@ -48,6 +48,33 @@ bash scripts/install-linux-exquis.sh    # for Exquis
 
 The installer builds xentool and places the binary at `~/.cargo/bin/xentool`.
 
+### 1a. Exquis udev rule (required for stable board ordering)
+
+xentool's Linux device enumeration reads each Exquis's USB serial number and
+topology path via libusb so `sync_boards()` can pin board0..boardN to specific
+physical USB ports across reboots. Without rw access to `/dev/bus/usb/…` the
+descriptor read fails silently and boards re-shuffle in udev coldplug order
+on every boot.
+
+The Linux installer (`install-linux-{exquis,wooting}.sh`) writes this rule
+automatically. For manual setup:
+
+```bash
+sudo tee /etc/udev/rules.d/70-exquis.rules >/dev/null <<'EOF'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2985", ATTRS{idProduct}=="0007", TAG+="uaccess", MODE="0664", GROUP="plugdev"
+EOF
+sudo udevadm control --reload
+sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=2985
+```
+
+Verify after the rule is installed:
+
+```bash
+xentool list   # should show 'serial: <hex>' for each Exquis, not 'unavailable'
+cat ~/.local/share/xentool/config/devices.json
+# After the next `xentool serve`, this file pins board0..boardN to serials.
+```
+
 ## 2. Layout files
 
 Place your layout files in the repo:
@@ -196,9 +223,11 @@ done
 sudo systemctl reset-failed modep-mod-midi-merger modep-mod-midi-broadcaster 2>/dev/null || true
 sudo systemctl restart modep-mod-host modep-mod-ui modep-mod-midi-merger modep-mod-midi-broadcaster
 
-# Restart user-level JACK clients (SC + alsa_out) that were killed by the
-# JACK restart above. systemctl --user is non-fatal if the units don't exist.
-systemctl --user restart xentool-supercollider.service xentool-alsa-out.service 2>/dev/null || true
+# Note: SC + alsa_out are intentionally NOT touched here. They are ordered
+# After=xentool-wooting-jack-connect.service so systemd starts them AFTER
+# this helper exits — i.e. against the post-restart JACK. That keeps scsynth
+# and hw:AUDIO from being opened/closed during the JACK bounce, halving
+# boot time and eliminating audible USB-speaker amp cycling.
 
 exit 0
 SCRIPT
@@ -257,22 +286,27 @@ For the MPE tanpura synth that runs alongside the Exquis backend:
 cat > ~/.config/systemd/user/xentool-supercollider.service << 'EOF'
 [Unit]
 Description=SuperCollider synth for xentool (exquis -> mpe_tanpura_xentool.scd)
-After=xentool.service sound.target
-Wants=xentool.service
+# Start AFTER the wooting JACK-restart fixup completes — scsynth then boots
+# once against the FINAL JACK instance, rather than booting, getting killed
+# by the helper, and re-booting. This cuts ~5-10 s off the boot path and
+# avoids a spurious USB-speaker amp on/off cycle if alsa_out had already
+# connected to the pre-restart SC.
+After=xentool.service xentool-wooting-jack-connect.service sound.target
+Wants=xentool.service xentool-wooting-jack-connect.service
 
 [Service]
 Type=simple
 Environment=QT_QPA_PLATFORM=offscreen
-# Wait for JACK to be up. On boot, jack.service (system) usually comes up after
-# user services, so sclang would otherwise fail scsynth boot with a name-conflict
-# error and never recover (Restart=on-failure doesn't fire because sclang itself
-# stays alive even when scsynth fails to boot).
+# Defensive: even with the After= above, JACK can still be a moment behind
+# user@.service settling. Cheap loop; usually exits on the first iteration.
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do jack_lsp >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
 ExecStart=/usr/bin/sclang /opt/xentool/supercollider/mpe_tanpura_xentool.scd
-# Reconnect SC -> USB speaker bridge whenever SC restarts. alsa_out's own
-# ExecStartPost only runs at alsa_out start, so a standalone SC restart would
-# otherwise lose the USB-side connection (the JACK link is process-local).
-ExecStartPost=/bin/sh -c 'for i in $(seq 1 30); do jack_lsp 2>/dev/null | grep -q "^USB:playback_1$" && jack_lsp 2>/dev/null | grep -q "^SuperCollider:out_1$" && jack_connect SuperCollider:out_1 USB:playback_1 2>/dev/null; jack_connect SuperCollider:out_2 USB:playback_2 2>/dev/null; jack_lsp -c 2>/dev/null | grep -A1 "^SuperCollider:out_1$" | grep -q "USB:playback_1" && exit 0; sleep 1; done; exit 0'
+# Re-establish SC -> USB speaker bridge after a *standalone* SC restart.
+# On the boot path alsa_out's own ExecStartPost handles this from the other
+# side, so this loop is load-bearing only when SC is restarted manually
+# while alsa_out keeps running with stale port references.
+# Idempotent: jack_connect rejects already-connected pairs harmlessly.
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 30); do jack_lsp 2>/dev/null | grep -q "^USB:playback_1$" || { sleep 1; continue; }; jack_connect SuperCollider:out_1 USB:playback_1 2>/dev/null; jack_connect SuperCollider:out_2 USB:playback_2 2>/dev/null; exit 0; done; exit 0'
 WorkingDirectory=/opt/xentool/supercollider
 Restart=on-failure
 RestartSec=3
@@ -340,8 +374,13 @@ aplay -l | grep -i usb
 cat > ~/.config/systemd/user/xentool-alsa-out.service << 'EOF'
 [Unit]
 Description=JACK -> USB speaker bridge (alsa_out)
-After=sound.target
-Wants=sound.target
+# Start AFTER SC, so the jack_connect ExecStartPost wires SC:out_* into
+# USB:playback_* once, deterministically, against the final JACK instance.
+# SC itself starts after xentool-wooting-jack-connect, so alsa_out is the
+# last user-side audio service to come up and the speaker amp opens exactly
+# once.
+After=xentool-supercollider.service sound.target
+Wants=xentool-supercollider.service sound.target
 
 [Service]
 Type=simple
@@ -349,8 +388,9 @@ Type=simple
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do jack_lsp >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -e /dev/snd/controlC5 ] && exit 0; sleep 1; done; exit 1'
 ExecStart=/usr/bin/alsa_out -j USB -d hw:AUDIO -r 48000 -q 1
-# Auto-connect SC's output once both sides exist (idempotent; the SC service
-# also does this on its own restart so the chain self-heals).
+# Auto-connect SC's output once both sides exist. With the After= above,
+# SC's JACK ports already exist by the time we get here, so the loop
+# typically exits on iteration 1.
 ExecStartPost=/bin/sh -c 'for i in $(seq 1 20); do jack_connect SuperCollider:out_1 USB:playback_1 2>/dev/null && jack_connect SuperCollider:out_2 USB:playback_2 2>/dev/null && exit 0; sleep 1; done; exit 0'
 Restart=on-failure
 RestartSec=5
@@ -405,24 +445,22 @@ systemctl --user enable xentool-studio.service
 
 ## Boot sequence
 
-After a full reboot, services start roughly in this order:
+After a full reboot, services start in this order:
 
 1. **JACK** (system) — starts on `hw:pisound` with hardware MIDI ports only
 2. **MODEP** (system) — mod-host, mod-ui, mod-midi-merger, mod-midi-broadcaster
 3. **xenharm** (user) — note name sidecar (Flask boot takes ~9 s)
 4. **xentool** / **xentool-wooting** (user) — Exquis / Wooting serve + Live HUDs
-   - Each waits for `curl /health` on xenharm to succeed before launching (else the HUD's one-shot probe sticks at `available=false`).
-5. **xentool-supercollider** (user) — tanpura synth
-   - Waits for `jack_lsp` to succeed (else scsynth boot races JACK and dies).
-   - `ExecStartPost` connects SC → USB bridge (if alsa_out is up).
-6. **xentool-alsa-out** (user, optional) — JACK → USB speaker bridge
-   - Waits for `jack_lsp` and `/dev/snd/controlC<N>` of the USB device. Drops out cleanly if the speaker isn't plugged in.
-7. **xentool-studio** (user) — tanpura web UI :9100
-8. **xentool-wooting-jack-connect** (user, oneshot) — once the wooting ALSA port exists, restarts JACK so `-X seq` picks it up as physical, then restarts the full MODEP MIDI chain and the user-side JACK clients (SC + alsa_out) so all connections re-establish.
+   - `ExecStartPre` polls `curl /health` on xenharm so the HUD's one-shot probe doesn't fire while Flask is still initialising.
+5. **xentool-wooting-jack-connect** (user, oneshot) — waits for the wooting ALSA port to register, restarts JACK so `-X seq` picks it up as a physical port, then restarts the MODEP MIDI chain. **No user services are touched here** — SC and alsa_out are ordered After= this helper, so they haven't started yet.
+6. **xentool-supercollider** (user) — tanpura synth. Boots scsynth once against the post-restart JACK. `ExecStartPre` polls `jack_lsp` defensively (usually one iteration).
+7. **xentool-alsa-out** (user, optional) — JACK → USB speaker bridge. Opens `hw:AUDIO` once. `ExecStartPost` connects SC → USB immediately because SC's ports are already up.
+8. **xentool-studio**, **xentool-edit**, **xentool-wooting-edit** (user) — web UIs.
 
-The JACK restart in step 8 causes a ~1 second audio interruption and bounces
-SC + alsa_out. The bridge auto-reconnects via the `ExecStartPost` hooks on
-both services.
+The JACK restart in step 5 still causes a ~1 s audio interruption on the
+pisound side, but **SC and the USB-speaker bridge open exactly once** —
+roughly half the boot time of the previous "start everything, then restart"
+approach, and the USB-speaker amp powers up only once.
 
 ## Web interfaces
 
@@ -497,3 +535,22 @@ card's `device.name` (check with `pw-cli ls Device`).
 **MODEP MIDI plugins (merger / broadcaster) dead after JACK restart:**
 `sudo systemctl restart modep-mod-midi-merger modep-mod-midi-broadcaster`.
 The wooting-jack-connect helper already does this on boot.
+
+**Multi-Exquis boards show their layouts in wrong order after reboot:**
+Verify the udev rule (section 1a) is installed — without it xentool can't
+read USB serial numbers and falls back to ALSA client-id order, which the
+kernel reassigns in udev coldplug order. Fix:
+
+```bash
+ls /etc/udev/rules.d/70-exquis.rules     # must exist
+xentool list | grep serial               # each Exquis should show a serial
+cat ~/.local/share/xentool/config/devices.json
+# Should contain board0..board3 entries with non-null "serial" fields.
+# If it doesn't, stop xentool, delete devices.json, restart:
+systemctl --user stop xentool xentool-supercollider
+rm ~/.local/share/xentool/config/devices.json
+systemctl --user start xentool xentool-supercollider
+```
+
+After this the pins survive reboots — board0..boardN map to physical USB
+port positions in ascending order (bus-NNN/ports-X.Y.Z.**1** → board0, etc.).

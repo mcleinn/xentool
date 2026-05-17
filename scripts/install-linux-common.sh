@@ -196,6 +196,33 @@ detect_python() {
     return 1
 }
 
+setup_exquis_udev() {
+    # xentool's Linux device enumeration calls libusb to read each Exquis's
+    # USB serial + topology path. Without rw access to /dev/bus/usb/<bus>/<dev>,
+    # the descriptor read fails and the device shows up without `usb_info`,
+    # which silently breaks the per-board pinning in `devices.json` (boards
+    # would then re-shuffle on every reboot in udev coldplug order).
+    #
+    # The rule is harmless when no Exquis is attached (it only matches
+    # VID 2985 / PID 0007) and works for both backends — the wooting
+    # backend may still have Exquis controllers attached alongside.
+    step "udev rule for Exquis USB descriptor access"
+    local rule=/etc/udev/rules.d/70-exquis.rules
+    if [[ -f "$rule" ]] && grep -q '2985' "$rule"; then
+        ok "  $rule already present."
+        return
+    fi
+    sudo tee "$rule" >/dev/null <<'EOF'
+# Intuitive Instruments Exquis — grant the local user libusb read access
+# to the device descriptor (serial number, USB topology path). Required
+# by xentool's `sync_boards` for stable board0..boardN pinning on Linux.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2985", ATTRS{idProduct}=="0007", TAG+="uaccess", MODE="0664", GROUP="plugdev"
+EOF
+    sudo udevadm control --reload
+    sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=2985 2>/dev/null || true
+    ok "  Installed $rule."
+}
+
 setup_xenharm() {
     step "xenharm sidecar (microtonal note glyphs for the Live HUD)"
     if ! yesno "  Install xenharm? (requires Python 3.10+ and xenharmlib via pip)" Y; then
@@ -411,6 +438,13 @@ Wants=xenharm.service
 # 'systemctl --user restart xentool.service'.
 Type=oneshot
 RemainAfterExit=yes
+# Wait for xenharm's HTTP port to actually answer before launching. The
+# HUD probes /health once at startup; if xenharm's Flask isn't ready yet
+# (Patchbox is slow — ~9 s), the probe fails and glyphs stay disabled
+# until xentool is restarted manually. After=xenharm.service only waits
+# for the systemd unit to be "active" (process started), not for the
+# socket to bind, so we poll the endpoint ourselves.
+ExecStartPre=/bin/sh -c 'for i in \$(seq 1 60); do curl -sf http://127.0.0.1:3199/health >/dev/null && exit 0; sleep 1; done; exit 0'
 ExecStart=/usr/bin/tmux -L xentool new-session -d -s xentool '$cmd'
 ExecStop=/usr/bin/tmux -L xentool kill-session -t xentool
 
@@ -511,6 +545,12 @@ Wants=xentool.service
 
 [Service]
 Type=simple
+# Wait for JACK to be reachable. On distros where JACK runs as a system
+# service (e.g. Patchbox), it can come up just after user@.service settles —
+# without this wait, scsynth's first boot races the JACK socket and
+# fails ("could not initialize audio") without sclang itself exiting, so
+# Restart=on-failure doesn't kick in. Cheap loop; usually one iteration.
+ExecStartPre=/bin/sh -c 'for i in \$(seq 1 60); do jack_lsp >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
 ExecStart=$SC_BIN $REPO_ROOT/supercollider/$sc_patch
 WorkingDirectory=$REPO_ROOT/supercollider
 Restart=on-failure
@@ -709,6 +749,7 @@ install_linux_main() {
     fi
 
     check_alsa_seq
+    setup_exquis_udev
     ensure_rust
     build_xentool
 
