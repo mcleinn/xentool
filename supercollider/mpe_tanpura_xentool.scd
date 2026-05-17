@@ -192,7 +192,6 @@ s.waitForBoot({
     ~mpeMasterSynth = Synth.tail(s, \mpeMaster);
 
     MIDIClient.init;
-    MIDIIn.connectAll;
 
     "".postln;
     "=== MIDI input sources ===".postln;
@@ -206,29 +205,39 @@ s.waitForBoot({
     // older manual Linux setups that still route xentool there.
     ~preferredPortMatches = ["xentool-serve", "xentool exquis", "loopmidi"];
     ~fallbackPortMatches = ["midi through", "midithrough"];
-    ~xentoolUid = MIDIClient.sources.detect({ |src|
+    ~xentoolSrc = MIDIClient.sources.detect({ |src|
         var dev = src.device.toLower, nam = src.name.toLower;
         ~preferredPortMatches.any({ |m| dev.contains(m) or: { nam.contains(m) } })
-    }) !? { |src| src.uid };
-    if(~xentoolUid.isNil) {
-        ~xentoolUid = MIDIClient.sources.detect({ |src|
+    });
+    if(~xentoolSrc.isNil) {
+        ~xentoolSrc = MIDIClient.sources.detect({ |src|
             var dev = src.device.toLower, nam = src.name.toLower;
             ~fallbackPortMatches.any({ |m| dev.contains(m) or: { nam.contains(m) } })
-        }) !? { |src| src.uid };
+        });
     };
+    ~xentoolUid = ~xentoolSrc !? { |src| src.uid };
 
-    if(~xentoolUid.isNil) {
+    // Subscribe ONLY to xentool's source. The previous `MIDIIn.connectAll`
+    // call hangs sclang on Linux setups with many ALSA seq clients (typical
+    // multi-Exquis Patchbox: 4 Exquis × 2 ports + xentool-input × 8 +
+    // xentool-wooting + xentool-serve-output + SC's own 22 out ports +
+    // pisound + touchosc ≈ 46 endpoints — past ALSA's subscription
+    // throughput). Every MIDIdef below filters by `srcID: ~xentoolUid` so
+    // connecting to anything else was wasted work anyway. Windows is
+    // unaffected: typically only a handful of MIDI clients, and the
+    // targeted-connect path works identically there.
+    if(~xentoolSrc.notNil) {
+        MIDIIn.connect(0, ~xentoolSrc);
+        "[ok] xentool input bound: uid=%  device=%".format(
+            ~xentoolUid, ~xentoolSrc.device
+        ).postln;
+    } {
         "".postln;
         "[!] No MIDI source matching preferred % or fallback % found.".format(
             ~preferredPortMatches, ~fallbackPortMatches
         ).postln;
         "[!] Start `xentool serve` first. On Windows, install loopMIDI and create a port named 'loopMIDI Port'.".postln;
         "[!] On Linux, xentool defaults to 'Midi Through' (always present via snd-seq).".postln;
-    } {
-        "[ok] xentool input bound: uid=%  device=%".format(
-            ~xentoolUid,
-            MIDIClient.sources.detect({ |s| s.uid == ~xentoolUid }).device
-        ).postln;
     };
 
     ~mpeVoices       = ();    // chan → Synth currently held on that channel

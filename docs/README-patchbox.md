@@ -308,13 +308,14 @@ Environment=QT_QPA_PLATFORM=offscreen
 # user@.service settling. Cheap loop; usually exits on the first iteration.
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do jack_lsp >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
 ExecStart=/usr/bin/sclang /opt/xentool/supercollider/mpe_tanpura_xentool.scd
-# Re-establish SC -> USB speaker bridge after a standalone SC restart.
-# Must wait for BOTH USB:playback_1 (alsa_out) AND SuperCollider:out_1
-# (scsynth — sclang launches scsynth lazily, ~5-10 s after sclang itself
-# is up). Checking only USB and running jack_connect while SC ports don't
-# yet exist silently no-ops (2>/dev/null) and the loop exits without
-# wiring anything. 60 × 1 s covers Pi 5's scsynth boot under load.
-ExecStartPost=/bin/sh -c 'for i in $(seq 1 60); do ports=$(jack_lsp 2>/dev/null); echo "$ports" | grep -q "^USB:playback_1$" || { sleep 1; continue; }; echo "$ports" | grep -q "^SuperCollider:out_1$" || { sleep 1; continue; }; jack_connect SuperCollider:out_1 USB:playback_1 2>/dev/null; jack_connect SuperCollider:out_2 USB:playback_2 2>/dev/null; exit 0; done; exit 0'
+# Wait only for scsynth's own JACK ports to exist. Previously also waited
+# for USB:playback_1 from alsa_out — but alsa_out used to be ordered
+# After= this service, so that wait deadlocked until the 60-s fallback
+# fired. alsa_out now runs in parallel and its own ExecStartPost handles
+# the SC -> USB connection from its side; this hook attempts the connect
+# opportunistically if USB ports happen to already exist (e.g. SC restarted
+# standalone while alsa_out kept running).
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 60); do ports=$(jack_lsp 2>/dev/null); echo "$ports" | grep -q "^SuperCollider:out_1$" || { sleep 1; continue; }; if echo "$ports" | grep -q "^USB:playback_1$"; then jack_connect SuperCollider:out_1 USB:playback_1 2>/dev/null; jack_connect SuperCollider:out_2 USB:playback_2 2>/dev/null; fi; exit 0; done; exit 0'
 WorkingDirectory=/opt/xentool/supercollider
 Restart=on-failure
 RestartSec=3
@@ -382,24 +383,27 @@ aplay -l | grep -i usb
 cat > ~/.config/systemd/user/xentool-alsa-out.service << 'EOF'
 [Unit]
 Description=JACK -> USB speaker bridge (alsa_out)
-# Start AFTER SC, so the jack_connect ExecStartPost wires SC:out_* into
-# USB:playback_* once, deterministically, against the final JACK instance.
-# SC itself starts after xentool-wooting-jack-connect, so alsa_out is the
-# last user-side audio service to come up and the speaker amp opens exactly
-# once.
-After=xentool-supercollider.service sound.target
-Wants=xentool-supercollider.service sound.target
+# Start AFTER the wooting JACK-restart fixup (so hw:AUDIO opens once
+# against the FINAL JACK instance), but NOT after SC. The previous
+# After=xentool-supercollider created a deadlock: SC's ExecStartPost
+# waited for USB:playback_1 from this unit, while this unit waited for SC
+# to be Started — only unblocked by SC's 60-s fallback. Running in
+# parallel with SC and letting the ExecStartPost loops converge fixes it.
+After=xentool-wooting-jack-connect.service sound.target
+Wants=xentool-wooting-jack-connect.service sound.target
 
 [Service]
 Type=simple
-# Wait for JACK and the USB card. Without these, alsa_out fails fast on boot.
+# Wait for JACK + the USB sound card. The card is keyed by ALSA NAME
+# (`/proc/asound/AUDIO`), not card number — udev reassigns numbers on
+# every boot depending on USB enumeration order.
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do jack_lsp >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
-ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -e /dev/snd/controlC5 ] && exit 0; sleep 1; done; exit 1'
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -d /proc/asound/AUDIO ] && exit 0; sleep 1; done; exit 1'
 ExecStart=/usr/bin/alsa_out -j USB -d hw:AUDIO -r 48000 -q 1
-# Auto-connect SC's output once both sides exist. With the After= above,
-# SC's JACK ports already exist by the time we get here, so the loop
-# typically exits on iteration 1.
-ExecStartPost=/bin/sh -c 'for i in $(seq 1 20); do jack_connect SuperCollider:out_1 USB:playback_1 2>/dev/null && jack_connect SuperCollider:out_2 USB:playback_2 2>/dev/null && exit 0; sleep 1; done; exit 0'
+# Wait for SuperCollider:out_1 to exist (scsynth boot is async — up to
+# ~30 s on Pi 5 under load), then connect. Running in parallel with SC so
+# the loop genuinely has to wait sometimes; cheap (one jack_lsp/sec).
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 60); do jack_lsp 2>/dev/null | grep -q "^SuperCollider:out_1$" || { sleep 1; continue; }; jack_connect SuperCollider:out_1 USB:playback_1 2>/dev/null; jack_connect SuperCollider:out_2 USB:playback_2 2>/dev/null; exit 0; done; exit 0'
 Restart=on-failure
 RestartSec=5
 
@@ -411,7 +415,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now xentool-alsa-out.service
 ```
 
-If the USB speaker isn't connected at boot, the `[ -e /dev/snd/controlC5 ]`
+If the USB speaker isn't connected at boot, the `[ -d /proc/asound/AUDIO ]`
 guard fails after 30 s and the service drops out cleanly — pisound output is
 unaffected. Plug the speaker in later and run
 `systemctl --user restart xentool-alsa-out` to pick it up.
