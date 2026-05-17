@@ -833,6 +833,12 @@ s.waitForBoot({
             i = i + 2;
         });
         "[studio] applied batch (% pairs)".format((msg.size - 1) / 2).postln;
+        // ACK back to the Python relay so its retry loop knows the first
+        // batch landed and stops re-sending. Without this, the relay
+        // re-fires every 2 s for ~12 s defensively, which on Linux can
+        // starve sclang's MIDIIn callback during init and leave the
+        // tanpura silent until SC is restarted.
+        ~studioReplyAddr.sendMsg('/tanpura/batch.ack');
     }, '/tanpura/batch', recvPort: ~studioPort);
 
     OSCdef(\studioDump, { |msg|

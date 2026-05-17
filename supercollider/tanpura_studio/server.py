@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import threading
 import time
 from datetime import datetime
@@ -288,20 +289,65 @@ def load_preset():
     return jsonify({"ok": True, "applied": len(flat) // 2, "state": state})
 
 
-def _retry_state_to_sc():
-    """Re-send the in-memory state every 2 s for ~12 s after startup.
+# Event set by `_listen_for_batch_ack` once SC replies to `/tanpura/batch`.
+# Read by `_retry_state_to_sc` to short-circuit the retry loop as soon as the
+# first batch lands. Before this ack mechanism existed, the retry loop fired
+# 6 times unconditionally (~12 s of OSC traffic), which on Linux can starve
+# sclang's MIDIIn handler during init and leave the tanpura silent until SC
+# is restarted manually.
+_batch_acked = threading.Event()
 
-    The single fire-and-forget batch in main() races against sclang's boot:
-    if it lands before `thisProcess.openUDPPort(57121)` + the matching
-    `OSCdef(\\studioBatch)` registration, the packet is silently dropped and
-    SC stays at factory `~kparams` until something else pushes (slider drag,
-    Reset, preset load). Re-sending periodically defeats the race — each
-    retry is idempotent on the SC side. The retry sends the CURRENT
-    `state` (snapshotted via `list(state.items())`), so any slider drags
-    that landed between retries are preserved instead of clobbered.
+# Matches `~studioReplyAddr` in mpe_tanpura_xentool.scd.
+_ACK_PORT = 57122
+
+
+def _listen_for_batch_ack():
+    """Bind UDP `_ACK_PORT` and set `_batch_acked` when SC sends an ack.
+
+    Any packet from SC counts as confirmation that its OSCdef is registered
+    and processed our batch — we don't parse the message payload (it's just
+    `/tanpura/batch.ack` with no args). The listener exits after the first
+    packet; the retry loop's 12 s budget caps how long we keep this socket
+    open if SC never responds.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", _ACK_PORT))
+    except OSError:
+        # Port already in use (another studio instance, port conflict).
+        # Without an ack we fall back to time-based retries — degraded but
+        # not broken.
+        return
+    sock.settimeout(20.0)
+    try:
+        try:
+            sock.recvfrom(1024)
+            _batch_acked.set()
+        except socket.timeout:
+            pass
+    finally:
+        sock.close()
+
+
+def _retry_state_to_sc():
+    """Re-send the in-memory state up to 6× over ~12 s after startup, but
+    stop early once SC acks the first batch.
+
+    The race we're defeating: the initial fire-and-forget batch in main()
+    can land before `thisProcess.openUDPPort(57121)` + the matching
+    `OSCdef(\\studioBatch)` registration in sclang, in which case the packet
+    is silently dropped and SC stays at factory `~kparams` until something
+    else pushes (slider drag, Reset, preset load).
+
+    Each retry sends the CURRENT `state` (snapshotted via
+    `list(state.items())`), so any slider drags that landed between retries
+    are preserved instead of clobbered.
     """
     for _ in range(6):
-        time.sleep(2.0)
+        # Wait up to 2 s for the ack from the previous send. `Event.wait`
+        # returns True once set, so we exit immediately on first success.
+        if _batch_acked.wait(timeout=2.0):
+            return
         items = list(state.items())
         flat: list = []
         for name, value in items:
@@ -329,6 +375,10 @@ def main():
         for name, value in state.items():
             flat.append(name)
             flat.append(float(value))
+        # Listener must be running BEFORE the first batch is sent so we
+        # don't miss the ack. The retry loop relies on `_batch_acked` being
+        # set by this listener to stop early.
+        threading.Thread(target=_listen_for_batch_ack, daemon=True).start()
         osc.send_message("/tanpura/batch", flat)
         threading.Thread(target=_retry_state_to_sc, daemon=True).start()
     else:
