@@ -432,7 +432,9 @@ xentool pads fill amber                  # paint all pads
 xentool pads clear
 xentool pad 17 blue                      # paint one pad
 xentool control settings red             # paint a control LED
-xentool highlight 60                     # highlight middle C (firmware-green only)
+xentool highlight 60                     # highlight pad 60 (firmware-green only)
+xentool highlight --device 2 30 127      # light pad 30 on the 2nd Exquis
+xentool highlight --device 2 30 0        # turn it off again
 xentool dev on                           # explicit developer-mode control
 xentool dev off
 ```
@@ -441,6 +443,18 @@ All pad colour commands use the **MPE-safe snapshot technique** by
 default — colours appear without disabling pitch-bend / CC74 /
 aftertouch. Pass `--legacy` to take over the pad zone in dev mode
 instead (full LED freedom, but MPE expression turns off).
+
+`xentool highlight <note> [velocity]` valid ranges:
+
+- `<note>` — the Exquis has **61 pads numbered 0–60**, and xentool serve
+  maps pad ID → MIDI note 1:1. Notes outside 0–60 are sent to the device
+  but light nothing (no pad to land on). Notes 61–127 are accepted by the
+  CLI but useless on the hardware.
+- `[velocity]` — `1–127` turns the pad on (firmware fixes the colour to
+  green; velocity does **not** affect colour), `0` turns it off.
+- `--device <N>` — 1-indexed device number from `xentool list`. With
+  multiple boards connected, omitting `--device` lights the pad on every
+  board simultaneously (useful for "blink all" tests).
 
 ### `xentool load <file.xtn>` — paint LEDs from a layout
 
