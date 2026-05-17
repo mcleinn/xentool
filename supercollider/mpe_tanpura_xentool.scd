@@ -833,12 +833,19 @@ s.waitForBoot({
             i = i + 2;
         });
         "[studio] applied batch (% pairs)".format((msg.size - 1) / 2).postln;
-        // ACK back to the Python relay so its retry loop knows the first
-        // batch landed and stops re-sending. Without this, the relay
-        // re-fires every 2 s for ~12 s defensively, which on Linux can
-        // starve sclang's MIDIIn callback during init and leave the
-        // tanpura silent until SC is restarted.
-        ~studioReplyAddr.sendMsg('/tanpura/batch.ack');
+        // ACK only once the master + reverb synths exist. Before then,
+        // ~studioApply's `Synth.set` calls for masterAmp / reverbMix /
+        // reverbRoom land on nil targets — the relevant ~kparams entries
+        // ARE updated but the actual amp/mix on the running synth chain
+        // stays at its compiled-in default. Withholding the ack keeps
+        // the Python relay's retry loop alive (2 s × 6 = 12 s budget)
+        // until both Synth.tail calls in ~setupAudio have run, so the
+        // next batch lands on real synths.
+        if(~mpeReverbSynth.notNil and: { ~mpeMasterSynth.notNil }) {
+            ~studioReplyAddr.sendMsg('/tanpura/batch.ack');
+        } {
+            "[studio] batch received but master/reverb not ready — withholding ack".postln;
+        };
     }, '/tanpura/batch', recvPort: ~studioPort);
 
     OSCdef(\studioDump, { |msg|
