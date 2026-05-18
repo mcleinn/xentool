@@ -184,6 +184,17 @@ s.waitForBoot({
         ReplaceOut.ar(0, sig);
     }).add;
 
+    // A short pleasant boot chime: confirms the audio chain end-to-end
+    // (scsynth -> JACK -> alsa_out -> USB speaker) is working, and primes
+    // any USB DAC firmware that might mute the leading edge of audio
+    // after silent idle. ~0.6 s, two-note resolution at moderate volume.
+    SynthDef(\xentoolBootChime, {
+        var env = EnvGen.kr(Env([0, 0.18, 0.18, 0], [0.04, 0.5, 0.1]), doneAction: 2);
+        var freqs = Select.kr(Line.kr(0, 1, 0.25).round(1), [440, 660]);
+        var sig = SinOsc.ar([freqs, freqs * 1.005], 0, env);
+        Out.ar(0, sig);
+    }).add;
+
     s.sync;
 
     // Reverb is added first so master sits after it in the chain
@@ -885,5 +896,17 @@ s.waitForBoot({
 
     "Studio OSC listening on udp://127.0.0.1:%".format(~studioPort).postln;
     // ── end studio OSC ────────────────────────────────────────────────────
+
+    // Boot chime: audible "I'm ready" indicator at the very end of
+    // initialisation. Plays after a short delay so the user has time to
+    // mentally register "right, now I can play" rather than missing it.
+    // Also wakes any USB DAC firmware that mutes the leading edge of audio
+    // after silent idle — the chime guarantees the amp is fully on by the
+    // time the first pad press lands.
+    SystemClock.sched(0.4, {
+        Synth.head(s, \xentoolBootChime);
+        "[chime] boot complete — audio chain ready".postln;
+        nil;
+    });
 
 });
