@@ -196,6 +196,15 @@ cat > ~/.local/bin/xentool-wooting-jack-connect << 'SCRIPT'
 set -euo pipefail
 export JACK_PROMISCUOUS_SERVER=jack
 
+# Wait for systemd to finish bringing up boot transactions before we ask it
+# to restart jack. On Patchbox the boot job queue saturates and a
+# `systemctl restart jack` issued mid-boot can queue for ~2 minutes (versus
+# ~0.5 s on an idle system, measured ~250x slowdown). `is-system-running
+# --wait` blocks until the state leaves `starting`. Cap the wait at 90 s in
+# case some unrelated service stays in `starting`; we'd rather restart
+# against a busy system than hang forever.
+timeout 90 systemctl is-system-running --wait >/dev/null 2>&1 || true
+
 # Wait for xentool-wooting's ALSA sequencer port to appear
 for _ in $(seq 1 40); do
   if arecordmidi -l 2>/dev/null | grep -q "xentool-wooting"; then
