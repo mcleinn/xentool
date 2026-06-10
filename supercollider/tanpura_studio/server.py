@@ -51,13 +51,13 @@ DEFAULTS: dict[str, float] = {
     "decay":         11.0,
     "dampScale":     1.0,
     "brightScale":   1.0,
-    "reverbMix":     0.45,
-    "reverbRoom":    0.88,
+    "reverbMix":     0.2,
+    "reverbRoom":    0.68,
     "masterAmp":     1.0,
     # new studio-exposed kparams
-    "droneAmt":      1.0,
-    "droneType":     0.0,    # 0=CombL, 1=Sine+harm, 2=off, 3=Saw, 4=Tri, 5=Beating, 6=Pulse, 7=Vocal
-    "droneHarmGain": 1.0,    # Sine+harm only: scales 2nd/3rd/4th harmonic gains
+    "droneAmt":      0.18,
+    "droneType":     1.0,    # 0=CombL, 1=Sine+harm (factory pick), 2=off, 3=Saw, 4=Tri, 5=Beating, 6=Pulse, 7=Vocal
+    "droneHarmGain": 2.25,   # Sine+harm only: scales 2nd/3rd/4th harmonic gains
     "jawariAmt":     0.7,
     "jawariMode":    0.0,    # 0=tanh+cubed, 1=tanh-only, 2=fold
     "jawariDrive":   6.0,
@@ -71,15 +71,15 @@ DEFAULTS: dict[str, float] = {
     "loShelfMin":    0.0,
     "loShelfMax":    -8.0,
     "loShelfMode":   0.0,    # 0=BLowShelf, 1=BPeakEQ, 2=off
-    "yMode":         1.0,    # 0=shelves, 1=RLPF (sitar/sarod wah — factory pick), 2=BPF, 3=tremolo, 4=comb, 5=off
+    "yMode":         0.0,    # 0=shelves (factory pick), 1=RLPF sitar/sarod wah, 2=BPF, 3=tremolo, 4=comb, 5=off
     "pressSwellLo":  0.3,
     "pressSwellHi":  2.0,
     "limiterThresh": 0.6,
-    # Y-axis input mapping (Bezier shape + pitch attenuation; defaults = identity)
+    # Y-axis input mapping (Bezier shape + pitch attenuation)
     "yMin":          0.0,
     "yCenter":       0.5,
-    "yMax":          1.0,
-    "yPitchTrack":   0.0,
+    "yMax":          0.67,
+    "yPitchTrack":   1.0,
     "yPitchRefHz":   261.6,
 }
 
@@ -300,6 +300,19 @@ _batch_acked = threading.Event()
 # Matches `~studioReplyAddr` in mpe_tanpura_xentool.scd.
 _ACK_PORT = 57122
 
+# How long the startup push keeps retrying for SC's OSC listener to come up.
+# Sized for a worst-case cold boot, not the happy path: on a healthy system SC
+# acks within a second or two and the loop exits immediately (see the ack
+# short-circuit in `_retry_state_to_sc`). The long tail matters when SC's boot
+# is delayed or restarted by systemd — e.g. its ExecStartPost hanging on a
+# mid-boot `systemctl restart`, which can push SC's OSC-ready point ~30-90 s
+# past when this relay starts. The old 12 s budget expired before SC was
+# listening, so `_default.json` never landed and SC stayed at factory kparams.
+# Retries are 2 s apart, so even the full budget is sparse traffic, not a flood.
+_RETRY_INTERVAL_S = 2.0
+_RETRY_BUDGET_S = 120.0
+_RETRY_COUNT = int(_RETRY_BUDGET_S / _RETRY_INTERVAL_S)
+
 
 def _listen_for_batch_ack():
     """Bind UDP `_ACK_PORT` and set `_batch_acked` when SC sends an ack.
@@ -307,8 +320,11 @@ def _listen_for_batch_ack():
     Any packet from SC counts as confirmation that its OSCdef is registered
     and processed our batch — we don't parse the message payload (it's just
     `/tanpura/batch.ack` with no args). The listener exits after the first
-    packet; the retry loop's 12 s budget caps how long we keep this socket
-    open if SC never responds.
+    packet; the retry loop's budget caps how long we keep this socket open if
+    SC never responds. The timeout must match `_RETRY_BUDGET_S` so a late ack
+    (slow SC boot) still arrives in time to stop the retries early — a 20 s
+    listener against a 120 s retry loop would miss acks from a SC that booted
+    after 20 s and keep firing all remaining retries needlessly.
     """
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -318,7 +334,7 @@ def _listen_for_batch_ack():
         # Without an ack we fall back to time-based retries — degraded but
         # not broken.
         return
-    sock.settimeout(20.0)
+    sock.settimeout(_RETRY_BUDGET_S)
     try:
         try:
             sock.recvfrom(1024)
@@ -330,8 +346,8 @@ def _listen_for_batch_ack():
 
 
 def _retry_state_to_sc():
-    """Re-send the in-memory state up to 6× over ~12 s after startup, but
-    stop early once SC acks the first batch.
+    """Re-send the in-memory state up to `_RETRY_COUNT`× over `_RETRY_BUDGET_S`
+    after startup, but stop early once SC acks the first batch.
 
     The race we're defeating: the initial fire-and-forget batch in main()
     can land before `thisProcess.openUDPPort(57121)` + the matching
@@ -343,10 +359,10 @@ def _retry_state_to_sc():
     `list(state.items())`), so any slider drags that landed between retries
     are preserved instead of clobbered.
     """
-    for _ in range(6):
-        # Wait up to 2 s for the ack from the previous send. `Event.wait`
-        # returns True once set, so we exit immediately on first success.
-        if _batch_acked.wait(timeout=2.0):
+    for _ in range(_RETRY_COUNT):
+        # Wait for the ack from the previous send. `Event.wait` returns True
+        # once set, so we exit immediately on first success.
+        if _batch_acked.wait(timeout=_RETRY_INTERVAL_S):
             return
         items = list(state.items())
         flat: list = []
@@ -369,8 +385,8 @@ def main():
     if user_default:
         print(f"  user default loaded from {USER_DEFAULT_PATH.name} ({len(user_default)} params)")
         # Fire-and-forget push to SC. The follow-up retry thread re-sends
-        # for ~12 s in case sclang hadn't yet reached its OSC listener
-        # registration when this initial packet arrived.
+        # for up to `_RETRY_BUDGET_S` in case sclang hadn't yet reached its
+        # OSC listener registration when this initial packet arrived.
         flat: list = []
         for name, value in state.items():
             flat.append(name)

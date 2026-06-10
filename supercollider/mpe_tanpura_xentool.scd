@@ -454,8 +454,8 @@ s.waitForBoot({
     // MIDI channel 16 (chan index 15).
     ~kparams = (
         decay:         11,     // KS string decay (sec)         — Encoder 1
-        reverbMix:     0.45,   // FreeVerb2 mix                  — Encoder 2
-        reverbRoom:    0.88,   // FreeVerb2 room                 — Encoder 3
+        reverbMix:     0.2,    // FreeVerb2 mix                  — Encoder 2
+        reverbRoom:    0.68,   // FreeVerb2 room                 — Encoder 3
         masterAmp:     1.0,    // Output gain                    — Encoder 4
         dampScale:     1.0,    // KS loop-coef multiplier        — Button 2
         brightScale:   1.0,    // Burst-LPF cutoff multiplier    — Button 3
@@ -602,8 +602,8 @@ s.waitForBoot({
     MIDIdef.cc(\xtBtn4, { |val, num, chan, src|
         if((chan == 15) and: { val > 0 }) {
             ~kparams.decay       = 11;
-            ~kparams.reverbMix   = 0.45;
-            ~kparams.reverbRoom  = 0.88;
+            ~kparams.reverbMix   = 0.2;
+            ~kparams.reverbRoom  = 0.68;
             ~kparams.masterAmp   = 1.0;
             ~kparams.dampScale   = 1.0;
             ~kparams.brightScale = 1.0;
@@ -879,7 +879,7 @@ s.waitForBoot({
 
     OSCdef(\studioReset, { |msg|
         var defaults = (
-            decay: 11, reverbMix: 0.45, reverbRoom: 0.88, masterAmp: 1.0,
+            decay: 11, reverbMix: 0.2, reverbRoom: 0.68, masterAmp: 1.0,
             dampScale: 1.0, brightScale: 1.0,
             droneAmt: 1.0, droneType: 0, droneHarmGain: 1.0,
             jawariAmt: 0.7, jawariMode: 0, jawariDrive: 6, jawariCubed: 1.4,
@@ -897,16 +897,50 @@ s.waitForBoot({
     "Studio OSC listening on udp://127.0.0.1:%".format(~studioPort).postln;
     // ── end studio OSC ────────────────────────────────────────────────────
 
-    // Boot chime: audible "I'm ready" indicator at the very end of
-    // initialisation. Plays after a short delay so the user has time to
-    // mentally register "right, now I can play" rather than missing it.
-    // Also wakes any USB DAC firmware that mutes the leading edge of audio
-    // after silent idle — the chime guarantees the amp is fully on by the
-    // time the first pad press lands.
-    SystemClock.sched(0.4, {
+    // Boot chime: audible "I'm ready" indicator — but only once the audio
+    // chain is actually wired to the speakers, otherwise it plays into silence.
+    // At boot JACK auto-connects SuperCollider:out_1 → system:playback, then
+    // xentool-supercollider's ExecStartPost tears that down and restarts MODEP
+    // so its Hardware Capture rebinds onto SuperCollider:out (e.g.
+    // effect_N:in_left). During that MODEP restart there is a window with no
+    // route to the speakers; a chime fired then is inaudible (this is exactly
+    // why the jingle "went missing"). So we poll jack_lsp until SC:out_1 is
+    // connected to a real downstream sink — any non-"system:" port, which
+    // distinguishes the final MODEP route from the transient system:playback
+    // auto-connect — then chime. Fallback: chime anyway after ~30 s so a
+    // routing edge case can never permanently mute it. AppClock (not
+    // SystemClock) so the blocking jack_lsp call can't perturb the audio/log
+    // routines running on SystemClock.
+    Routine({
+        var scRouted = {
+            var out = "JACK_PROMISCUOUS_SERVER=jack jack_lsp -c 2>/dev/null".unixCmdGetStdOut;
+            var lines = (out ? "").split($\n);
+            var idx = lines.indexOfEqual("SuperCollider:out_1");
+            var routed = false, j;
+            if(idx.notNil) {
+                j = idx + 1;
+                // Walk the indented connection lines under SuperCollider:out_1.
+                while({ (j < lines.size)
+                    and: { lines[j].size > 0 }
+                    and: { (lines[j][0] == $ ) or: { lines[j][0] == $\t } } }, {
+                    var target = lines[j].stripWhiteSpace;
+                    if((target.size > 0) and: { target.keep(7) != "system:" }) { routed = true };
+                    j = j + 1;
+                });
+            };
+            routed;
+        };
+        var tries = 0, maxTries = 60;   // 60 × 0.5 s ≈ 30 s fallback
+        while({ scRouted.value.not and: { tries < maxTries } }, {
+            tries = tries + 1;
+            0.5.wait;
+        });
         Synth.head(s, \xentoolBootChime);
-        "[chime] boot complete — audio chain ready".postln;
-        nil;
-    });
+        if(tries >= maxTries,
+            { "[chime] boot complete — fallback after %s (SC out not seen routed)"
+                .format((maxTries * 0.5).asInteger).postln },
+            { "[chime] boot complete — audio chain ready".postln }
+        );
+    }).play(AppClock);
 
 });

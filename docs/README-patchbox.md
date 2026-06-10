@@ -281,6 +281,7 @@ patch ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart jack
 patch ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart modep-mod-host
 patch ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart modep-mod-ui
 patch ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart modep-mod-host modep-mod-ui
+patch ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart --no-block modep-mod-host modep-mod-ui
 patch ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart modep-mod-host modep-mod-ui modep-mod-midi-merger modep-mod-midi-broadcaster
 patch ALL=(ALL) NOPASSWD: /usr/bin/systemctl reset-failed modep-mod-midi-merger modep-mod-midi-broadcaster
 EOF
@@ -293,6 +294,95 @@ sudo visudo -c -f /etc/sudoers.d/xentool-jack-restart   # syntax check
 The Exquis controllers are hardware USB MIDI devices — JACK automatically picks
 them up as physical ports at boot. No extra steps needed; they appear in MODEP's
 MIDI device list immediately.
+
+Note that MODEP only exposes the *raw, untuned* Exquis port. The microtonal,
+retuned MPE stream lives on the ALSA seq port `xentool-serve-output:Xentool
+Exquis MPE` that `xentool serve` creates — that is what SuperCollider listens to.
+We deliberately do **not** route that stream through MODEP: MODEP's
+`mod-midi-merger` / `mod-midi-broadcaster` collapse MIDI channels, which destroys
+MPE (per-note pitch bend lives across 16 channels). To send the retuned MPE to
+external MPE hardware, subscribe to that ALSA port directly — see the next
+section.
+
+### Exquis MPE → Expert Sleepers FH-2 hardware
+
+The Expert Sleepers **FH-2** ("faderHost", a USB-MIDI Eurorack module that turns
+MPE into CV) should receive the *same* retuned MPE stream SuperCollider gets. On
+Linux that stream is the ALSA seq source `xentool-serve-output:Xentool Exquis
+MPE`, and the FH-2 is just another ALSA seq sink (`FH-2:FH-2 MIDI 1`), so the
+whole job is one ALSA subscription — no JACK, no MODEP, no merger, no `sudo`, and
+no change to xentool itself. ALSA seq forwards all 16 channels verbatim, so MPE
+is preserved end to end.
+
+A tiny user service keeps the link alive across FH-2 hotplug and xentool
+restarts. Connection is by client *name* (numbers change on replug/restart;
+names don't):
+
+```bash
+mkdir -p ~/.local/bin
+
+cat > ~/.local/bin/xentool-fh2-connect << 'SCRIPT'
+#!/usr/bin/env bash
+# Keep the Expert Sleepers FH-2 subscribed to xentool's retuned Exquis MPE —
+# the same ALSA seq source SuperCollider receives. MPE (16-channel per-note
+# pitch bend) is preserved because ALSA seq forwards all channels verbatim.
+#
+# Name-based aconnect is deliberate: ALSA client *numbers* change when the FH-2
+# is replugged or xentool restarts, but the client *names* are stable, so the
+# link re-establishes itself across hotplug and service restarts.
+set -uo pipefail
+
+SRC_CLIENT="xentool-serve-output"
+SRC="${SRC_CLIENT}:Xentool Exquis MPE"
+DST_CLIENT="FH-2"
+DST="${DST_CLIENT}:FH-2 MIDI 1"
+
+while true; do
+  if aconnect -l 2>/dev/null | grep -q "'${DST_CLIENT}'" \
+     && aconnect -l 2>/dev/null | grep -q "'${SRC_CLIENT}'"; then
+    # Idempotent: aconnect succeeds (and we log) only on a fresh subscription;
+    # "already subscribed" is a harmless no-op that never disturbs the link.
+    if aconnect "$SRC" "$DST" 2>/dev/null; then
+      echo "xentool-fh2-connect: connected ${SRC} -> ${DST}"
+    fi
+  fi
+  sleep 2
+done
+SCRIPT
+
+chmod +x ~/.local/bin/xentool-fh2-connect
+```
+
+Systemd user unit:
+
+```bash
+cat > ~/.config/systemd/user/xentool-fh2-connect.service << 'EOF'
+[Unit]
+Description=Subscribe Expert Sleepers FH-2 to xentool's retuned Exquis MPE (same stream SuperCollider gets)
+After=xentool.service
+Wants=xentool.service
+
+[Service]
+Type=simple
+ExecStart=/home/patch/.local/bin/xentool-fh2-connect
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now xentool-fh2-connect.service
+```
+
+Verify: `aconnect -l` should show the `xentool-serve-output` client
+`Connecting To:` both the SuperCollider client and the `FH-2` client. Drop the
+link with `aconnect -d` (or replug the FH-2) and it re-establishes within ~2 s.
+
+The poll loop is chosen over a udev rule on purpose: a 2 s ALSA-client scan
+covers every case in one mechanism (FH-2 plug/unplug, xentool restart, boot
+races) without the root/udev/`systemctl --user`-from-udev complexity.
 
 ## 7. SuperCollider synth (optional, Exquis)
 
@@ -336,6 +426,38 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable xentool-supercollider.service
 ```
+
+### Cap the MODEP stop timeout (boot chime / audio-ready)
+
+SC's `ExecStartPost` restarts `modep-mod-host`/`modep-mod-ui` so MODEP's Hardware
+Capture rebinds onto SuperCollider's outputs. `mod-host` can ignore SIGTERM on
+shutdown (e.g. a pedalboard plugin that blocks on teardown), in which case systemd
+waits the **default 90 s** `TimeoutStopSec` before force-killing it. During those
+90 s no audio reaches the speakers and the boot chime plays into silence. A drop-in
+caps the wait at 10 s (it gets SIGKILLed at 90 s anyway — this just gets there
+sooner; drop-in survives MODEP package upgrades):
+
+```bash
+for svc in modep-mod-host modep-mod-ui; do
+  sudo mkdir -p /etc/systemd/system/$svc.service.d
+  sudo tee /etc/systemd/system/$svc.service.d/override.conf >/dev/null <<'EOF'
+[Service]
+TimeoutStopSec=10
+EOF
+done
+sudo systemctl daemon-reload
+```
+
+> The deeper cause (MODEP bounced during boot at all) is structural: `mod-host` is
+> `BindsTo=jack.service` and JACK is restarted mid-boot, plus SC restarts MODEP to
+> rebind Hardware Capture. The timeout cap makes each bounce cheap rather than
+> removing it.
+
+The boot chime in `mpe_tanpura_xentool.scd` is **gated** on this: instead of firing
+at a fixed delay, it polls `jack_lsp` until `SuperCollider:out_1` is connected to a
+real downstream sink (any non-`system:` port — distinguishing the final MODEP route
+from the transient `system:playback` auto-connect at boot), then plays, with a ~30 s
+fallback. So the jingle is audible and genuinely means "audio chain ready."
 
 ## 8. USB speaker output (optional)
 
