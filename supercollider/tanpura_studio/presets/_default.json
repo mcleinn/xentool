@@ -1,0 +1,16 @@
+{
+  "saved_at": "2026-05-02T21:04:28",
+  "note": "user default",
+  "params": {
+    "decay": 11.0, "dampScale": 1.0, "brightScale": 1.0,
+    "reverbMix": 0.2, "reverbRoom": 0.68, "masterAmp": 1.0,
+    "droneAmt": 0.18, "droneType": 1.0, "droneHarmGain": 2.25,
+    "jawariAmt": 0.7, "jawariMode": 0.0, "jawariDrive": 6.0, "jawariCubed": 1.4,
+    "sympAmt": 1.0,
+    "hiShelfFreq": 2600.0, "hiShelfMin": -24.0, "hiShelfMax": 24.0, "hiShelfMode": 0.0,
+    "loShelfFreq": 400.0, "loShelfMin": 0.0, "loShelfMax": -8.0, "loShelfMode": 0.0,
+    "yMode": 0.0, "pressSwellLo": 0.3, "pressSwellHi": 2.0, "limiterThresh": 0.6,
+    "yMin": 0.0, "yCenter": 0.5, "yMax": 0.67,
+    "yPitchTrack": 1.0, "yPitchRefHz": 261.6
+  }
+}
