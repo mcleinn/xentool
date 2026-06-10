@@ -116,28 +116,15 @@ pub fn list_devices() -> Result<Vec<ExquisDevice>> {
             });
         }
 
-        // The BTreeMap above is keyed by ALSA sequencer client_id, which the
-        // kernel reassigns in udev coldplug order on every boot — so the
-        // resulting `devices` ordering scrambles across reboots, leaving
-        // sync_boards() unable to keep board0..boardN pinned to physical
-        // positions. Re-sort by a *stable* USB key (topology path, falling
-        // back to serial) so the final ordering corresponds to physical USB
-        // port position regardless of which Exquis ALSA enumerated first.
-        sort_by_stable_usb_key(&mut devices);
-        for (i, d) in devices.iter_mut().enumerate() {
-            d.number = i + 1;
-            if count > 1 {
-                // The (N) suffix in display_label encodes the position; rewrite
-                // so it reflects the post-sort number, not the pre-sort one.
-                let base = d
-                    .label
-                    .rsplit_once(" (")
-                    .map(|(b, _)| b.to_string())
-                    .unwrap_or_else(|| d.label.clone());
-                d.label = format!("{} ({})", base, i + 1);
-            }
-        }
-
+        // Device identity is the USB serial number, not the position in
+        // this enumeration vector. The cross-reboot reshuffling caused by
+        // the kernel reassigning ALSA seq client_ids in udev coldplug
+        // order doesn't affect correctness: `config::compute_board_assignments`
+        // matches each device to a stable board0..boardN slot by serial,
+        // so cable swaps and reboots preserve the user's mapping
+        // regardless of what order ALSA hands us the boards. This matches
+        // the Windows backend, which also uses enumeration order
+        // verbatim and relies on serial-pinning downstream.
         return Ok(devices);
     }
 
@@ -361,25 +348,6 @@ pub fn open_inputs(
     Ok(connections)
 }
 
-/// Sort Linux Exquis device enumeration by stable USB identity so the
-/// physical-to-logical mapping survives reboots. Prefers USB topology path
-/// (`UsbDeviceInfo.location`, which encodes the bus + port chain such as
-/// `bus-001/ports-1.4.4.1/addr-NNN` — stable as long as the user keeps the
-/// same physical wiring) and falls back to the device label only when no
-/// USB info is attached at all.
-#[cfg(not(windows))]
-fn sort_by_stable_usb_key(devices: &mut Vec<ExquisDevice>) {
-    devices.sort_by(|a, b| {
-        let key = |d: &ExquisDevice| {
-            d.usb_info
-                .as_ref()
-                .map(|u| u.location.clone())
-                .unwrap_or_else(|| d.label.clone())
-        };
-        key(a).cmp(&key(b))
-    });
-}
-
 #[cfg(not(windows))]
 #[derive(Debug)]
 struct LinuxExquisPorts {
@@ -446,92 +414,3 @@ fn match_usb_info(
     })
 }
 
-#[cfg(all(test, not(windows)))]
-mod linux_sort_tests {
-    use super::*;
-    use crate::exquis::usb::UsbDeviceInfo;
-
-    fn fake(label: &str, usb_location: &str, serial: &str) -> ExquisDevice {
-        ExquisDevice {
-            number: 0,
-            label: label.to_string(),
-            input_name: None,
-            output_name: None,
-            input_names: Vec::new(),
-            output_names: Vec::new(),
-            usb_info: Some(UsbDeviceInfo {
-                product_name: Some("Exquis".to_string()),
-                manufacturer: Some("Intuitive Instruments".to_string()),
-                serial_number: Some(serial.to_string()),
-                vendor_id: 0x2985,
-                product_id: 0x0007,
-                bus_number: 1,
-                address: 0,
-                port_numbers: Vec::new(),
-                location: usb_location.to_string(),
-                unique_id: serial.to_string(),
-                firmware_version: None,
-            }),
-        }
-    }
-
-    /// The ALSA client_id-based BTreeMap can hand us the same four boards
-    /// in any order across reboots. Verify that whatever order we get in,
-    /// the post-sort vector is the same — anchored to the stable USB
-    /// topology path (the lowest port chain becomes board0).
-    #[test]
-    fn sort_by_usb_location_is_stable_across_input_permutations() {
-        // Two boots: ALSA hands us the same four devices in opposite
-        // orders (e.g. udev coldplug reverses, or one Exquis was hotplugged
-        // late on the previous boot).
-        let boot_a = vec![
-            fake("Exquis", "bus-001/ports-1.4.4.3/addr-005", "serC"),
-            fake("Exquis", "bus-001/ports-1.4.4.1/addr-003", "serA"),
-            fake("Exquis", "bus-001/ports-1.4.4.4/addr-006", "serD"),
-            fake("Exquis", "bus-001/ports-1.4.4.2/addr-004", "serB"),
-        ];
-        let boot_b = vec![
-            fake("Exquis", "bus-001/ports-1.4.4.4/addr-006", "serD"),
-            fake("Exquis", "bus-001/ports-1.4.4.3/addr-005", "serC"),
-            fake("Exquis", "bus-001/ports-1.4.4.2/addr-004", "serB"),
-            fake("Exquis", "bus-001/ports-1.4.4.1/addr-003", "serA"),
-        ];
-        let mut a = boot_a.clone();
-        let mut b = boot_b.clone();
-        sort_by_stable_usb_key(&mut a);
-        sort_by_stable_usb_key(&mut b);
-        let serials_a: Vec<_> =
-            a.iter().map(|d| d.usb_info.as_ref().unwrap().unique_id.clone()).collect();
-        let serials_b: Vec<_> =
-            b.iter().map(|d| d.usb_info.as_ref().unwrap().unique_id.clone()).collect();
-        assert_eq!(serials_a, serials_b);
-        assert_eq!(serials_a, vec!["serA", "serB", "serC", "serD"]);
-    }
-
-    #[test]
-    fn sort_falls_back_to_label_when_no_usb_info() {
-        let mut devs = vec![
-            ExquisDevice {
-                number: 0,
-                label: "Exquis-Z".to_string(),
-                input_name: None,
-                output_name: None,
-                input_names: Vec::new(),
-                output_names: Vec::new(),
-                usb_info: None,
-            },
-            ExquisDevice {
-                number: 0,
-                label: "Exquis-A".to_string(),
-                input_name: None,
-                output_name: None,
-                input_names: Vec::new(),
-                output_names: Vec::new(),
-                usb_info: None,
-            },
-        ];
-        sort_by_stable_usb_key(&mut devs);
-        assert_eq!(devs[0].label, "Exquis-A");
-        assert_eq!(devs[1].label, "Exquis-Z");
-    }
-}
