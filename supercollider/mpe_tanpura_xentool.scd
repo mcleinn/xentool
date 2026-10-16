@@ -33,6 +33,7 @@ if(~patchDir.isEmpty) { ~patchDir = File.getcwd };
 if(~patchDir.beginsWith("/").not and: { ~patchDir.beginsWith("~").not } and: { ~patchDir.contains(":").not }) {
     ~patchDir = File.getcwd +/+ ~patchDir;   // `sclang file.scd` leaves a relative path
 };
+"patch dir: %".format(~patchDir).postln;
 
 s.waitForBoot({
 
