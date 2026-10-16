@@ -25,6 +25,11 @@
 // running this script — otherwise the source-filter has nothing to match
 // and no notes will be heard.
 
+// Directory of this patch. `thisProcess.nowExecutingPath` is nil when the
+// file is run as `sclang file.scd` on some builds (Termux), so fall back to
+// the working directory (the launchers cd into supercollider/ first).
+~patchDir = thisProcess.nowExecutingPath !? { |p| PathName(p).pathOnly } ?? { File.getcwd };
+
 s.waitForBoot({
 
     SynthDef(\mpeTanpuraXentool, { |freq=220, gate=1, bend=0, bright=0.5, press=0, vel=0.5, decay=11, dampScale=1, brightScale=1, droneAmt=1.0, droneType=0, droneHarmGain=1, jawariAmt=0.7, jawariMode=0, jawariDrive=6, jawariCubed=1.4, sympAmt=1, hiShelfFreq=2600, hiShelfMin=(-24), hiShelfMax=24, hiShelfMode=0, loShelfFreq=400, loShelfMin=0, loShelfMax=(-8), loShelfMode=0, yMode=1, pressSwellLo=0.3, pressSwellHi=2.0, limiterThresh=0.6, yMin=0, yCenter=0.5, yMax=1, yPitchTrack=0, yPitchRefHz=261.6|
@@ -240,7 +245,7 @@ s.waitForBoot({
     // the Android/Termux default). Tag its events with the same source uid
     // the MIDIdefs below filter on, so they pass `srcID: ~xentoolUid`.
     ~xentoolOscSrc = ~xentoolUid ? 0;
-    (PathName(thisProcess.nowExecutingPath).pathOnly +/+ "xentool_osc_midi.scd").load;
+    (~patchDir +/+ "xentool_osc_midi.scd").load;
 
     // Subscribe ONLY to xentool's source. The previous `MIDIIn.connectAll`
     // call hangs sclang on Linux setups with many ALSA seq clients (typical
@@ -281,7 +286,7 @@ s.waitForBoot({
     // parameters it produced into supercollider/logs/tanpura_<ts>.jsonl.
     // 100 ms flush via SystemClock + ShutDown hook for the final batch.
     ~logEnabled = false;
-    ~logDir = PathName(thisProcess.nowExecutingPath).pathOnly +/+ "logs";
+    ~logDir = ~patchDir +/+ "logs";
     ~logQueue = List.new;
     ~logPath = nil;
     ~logCount = 0;
@@ -350,7 +355,7 @@ s.waitForBoot({
     // source matcher picked the wrong UID, the log will still contain
     // every incoming MIDI byte.
     ~logEnabled = true;
-    ~logDir = PathName(thisProcess.nowExecutingPath).pathOnly +/+ "logs";
+    ~logDir = ~patchDir +/+ "logs";
     ~logQueue = List.new;
     ~logPath = nil;
     ~logCount = 0;

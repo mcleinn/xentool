@@ -33,6 +33,11 @@ use crate::exquis::usb::UsbDeviceInfo;
 
 pub const ENV_FD: &str = "TERMUX_USB_FD";
 pub const ENV_REEXEC_ARGS: &str = "XENTOOL_REEXEC_ARGS";
+/// Set by the parent when its stdio was a terminal: termux-api runs the
+/// callback with its stdout/stderr on a relay pipe that is only flushed
+/// when the child exits, which would leave the TUI invisible. The child
+/// re-attaches fds 0-2 to `/dev/tty` instead.
+pub const ENV_REEXEC_TTY: &str = "XENTOOL_REEXEC_TTY";
 const EXQUIS_VID: u16 = 0x2985;
 const EXQUIS_PID: u16 = 0x0007;
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
@@ -456,6 +461,9 @@ pub fn bootstrap(needs_device: impl Fn(&[String]) -> bool) -> Vec<String> {
     // Re-exec'd child: real args come from the env.
     if let Ok(json) = std::env::var(ENV_REEXEC_ARGS) {
         if let Ok(mut args) = serde_json::from_str::<Vec<String>>(&json) {
+            if std::env::var_os(ENV_REEXEC_TTY).is_some() {
+                reattach_tty();
+            }
             args.insert(0, argv[0].clone());
             return args;
         }
@@ -473,6 +481,27 @@ pub fn bootstrap(needs_device: impl Fn(&[String]) -> bool) -> Vec<String> {
             );
             argv
         }
+    }
+}
+
+/// Point stdin/stdout/stderr at the controlling terminal (best effort).
+fn reattach_tty() {
+    use std::os::fd::AsRawFd;
+    let Ok(tty) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+    else {
+        return;
+    };
+    let fd = tty.as_raw_fd();
+    // SAFETY: plain dup2 onto the standard descriptors; `tty` stays open
+    // until the end of this function, after which the dups keep the
+    // terminal alive.
+    unsafe {
+        libc::dup2(fd, 0);
+        libc::dup2(fd, 1);
+        libc::dup2(fd, 2);
     }
 }
 
@@ -557,10 +586,13 @@ fn reexec_under_termux_usb(argv: &[String]) -> Result<Vec<String>> {
     };
     let args_json = serde_json::to_string(&argv[1..])?;
     // Permission was granted by the probe; no `-r` needed now.
-    let err = std::process::Command::new("termux-usb")
-        .args(["-E", "-e", &exe, &path])
-        .env(ENV_REEXEC_ARGS, args_json)
-        .exec();
+    let mut cmd = std::process::Command::new("termux-usb");
+    cmd.args(["-E", "-e", &exe, &path])
+        .env(ENV_REEXEC_ARGS, args_json);
+    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        cmd.env(ENV_REEXEC_TTY, "1");
+    }
+    let err = cmd.exec();
     Err(anyhow::Error::from(err).context("exec termux-usb"))
 }
 

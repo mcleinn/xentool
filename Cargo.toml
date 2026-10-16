@@ -43,6 +43,11 @@ midir = "0.10"
 # `termux-clipboard-set` instead.
 arboard = "3.6"
 
+[target.'cfg(target_os = "android")'.dependencies]
+# dup2() so the termux-usb re-exec'd child draws its TUI on the terminal
+# instead of termux-api's relay pipe (see exquis::usbmidi::bootstrap).
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 jack = "0.11"
 alsa = "0.9"

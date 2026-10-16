@@ -43,6 +43,11 @@
     ~tuningC0 * (2.pow(abs_pitch / ~tuningEdo))
 };
 
+// Directory of this patch. `thisProcess.nowExecutingPath` is nil when the
+// file is run as `sclang file.scd` on some builds (Termux), so fall back to
+// the working directory (the launchers cd into supercollider/ first).
+~patchDir = thisProcess.nowExecutingPath !? { |p| PathName(p).pathOnly } ?? { File.getcwd };
+
 s.waitForBoot({
 
     SynthDef(\piano, { |freq=440, amp=0.3, gate=1, press=0, bend=0, bright=0.5,
@@ -198,7 +203,7 @@ s.waitForBoot({
     ~midiSources = if(~midiAvailable) { MIDIClient.sources ? [] } { [] };
 
     // OSC → MIDIdef bridge (inert unless xentool runs with --output osc://…).
-    (PathName(thisProcess.nowExecutingPath).pathOnly +/+ "xentool_osc_midi.scd").load;
+    (~patchDir +/+ "xentool_osc_midi.scd").load;
 
     "".postln;
     "=== MIDI input sources ===".postln;
