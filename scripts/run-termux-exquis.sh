@@ -17,17 +17,17 @@
 #
 # Usage: scripts/run-termux-exquis.sh [layout.xtn]   (default xtn/edo31.xtn)
 # Env:   JACK_RATE (44100 = PulseAudio sink rate, avoids resampling)
-#        JACK_PERIOD (1024)   PULSE_LATENCY_MS (100)
+#        JACK_PERIOD (512)   PULSE_LATENCY_MS (40)
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LAYOUT="${1:-xtn/edo31.xtn}"
 SESSION="xentool"
 JACK_RATE="${JACK_RATE:-44100}"
-JACK_PERIOD="${JACK_PERIOD:-1024}"
+JACK_PERIOD="${JACK_PERIOD:-512}"
 # The dummy backend's -w is its cycle time; keep it exactly one period.
 JACK_WAIT_US=$(( JACK_PERIOD * 1000000 / JACK_RATE ))
-PULSE_LATENCY_MS="${PULSE_LATENCY_MS:-100}"
+PULSE_LATENCY_MS="${PULSE_LATENCY_MS:-40}"
 FIFO="$HOME/.cache/xentool/jack2pulse.fifo"
 BRIDGE="$PREFIX/bin/jack2pulse"
 

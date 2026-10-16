@@ -7,19 +7,28 @@
  * module-sles-sink is clean. So: run jackd on its software-timed `dummy`
  * backend purely as scsynth's clock, and pipe JACK's audio into PulseAudio:
  *
- *     jackd -d dummy -r 44100 -p 1024 -w 23220 &
- *     jack2pulse | pacat --raw --format=s16le --rate=44100 --channels=2 --latency-msec=100
+ *     jackd -d dummy -r 44100 -p 512 -w 11610 &
+ *     mkfifo f; pacat --raw --format=s16le --rate=44100 --channels=2 \
+ *                     --latency-msec=40 f &  jack2pulse > f
  *
  * The bridge registers two input ports, auto-connects them to the ports
  * matching the given prefix (default "SuperCollider:out_") whenever they
  * appear, converts to interleaved s16le and writes to stdout through a
- * lock-free ring buffer. No resampling: the dummy backend and the sink are
- * both nominally at the chosen rate; long-term drift is absorbed by the
- * ring buffer (overflows are counted on stderr, underruns play silence).
+ * lock-free ring buffer.
+ *
+ * Latency control: the pipe is shrunk to one page (F_SETPIPE_SZ) so the
+ * kernel cannot hoard audio, and the ring buffer's average fill is steered
+ * towards `target` frames by dropping or duplicating ONE frame per 1024
+ * whenever the average sits outside [target/2, target*2]. That is ~0.1 %
+ * rate trimming — inaudible — and it also absorbs the long-term clock
+ * drift between the dummy backend and the OpenSL sink. Hard overflows
+ * (sink stalled) are counted on stderr.
  *
  * Build (Termux):  clang -O2 -o $PREFIX/bin/jack2pulse jack2pulse.c -ljack
- * Usage:           jack2pulse [source-port-prefix] [rb-ms]
+ * Usage:           jack2pulse [source-port-prefix] [target-frames]
  */
+#define _GNU_SOURCE
+#include <fcntl.h>
 #include <jack/jack.h>
 #include <jack/ringbuffer.h>
 #include <signal.h>
@@ -30,12 +39,13 @@
 #include <unistd.h>
 
 #define MAX_FRAMES 16384
+#define RB_SECONDS 1
 
 static jack_client_t *client;
 static jack_port_t *in_port[2];
 static jack_ringbuffer_t *rb;
 static volatile sig_atomic_t running = 1;
-static volatile unsigned long overflows = 0, underruns = 0;
+static volatile unsigned long overflows = 0;
 static int16_t scratch[MAX_FRAMES * 2];
 
 static void on_signal(int sig) { (void)sig; running = 0; }
@@ -76,9 +86,19 @@ static void try_connect(const char *prefix) {
     }
 }
 
+static int write_all(const char *buf, size_t n) {
+    size_t off = 0;
+    while (off < n && running) {
+        ssize_t w = write(STDOUT_FILENO, buf + off, n - off);
+        if (w < 0) return -1;
+        off += (size_t)w;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *prefix = argc > 1 ? argv[1] : "SuperCollider:out_";
-    int rb_ms = argc > 2 ? atoi(argv[2]) : 1000;
+    long target = argc > 2 ? atol(argv[2]) : 0;   /* frames; 0 = one period */
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -91,9 +111,17 @@ int main(int argc, char **argv) {
         return 1;
     }
     jack_nframes_t rate = jack_get_sample_rate(client);
-    size_t rb_bytes = (size_t)rate * 4 * (size_t)rb_ms / 1000;
+    jack_nframes_t period = jack_get_buffer_size(client);
+    if (target <= 0) target = period;
+    size_t rb_bytes = (size_t)rate * 4 * RB_SECONDS;
     rb = jack_ringbuffer_create(rb_bytes);
     jack_ringbuffer_mlock(rb);
+
+#ifdef F_SETPIPE_SZ
+    /* Keep the kernel pipe tiny so it cannot add hundreds of ms of latency. */
+    if (fcntl(STDOUT_FILENO, F_SETPIPE_SZ, 4096) < 0)
+        fprintf(stderr, "jack2pulse: F_SETPIPE_SZ failed (stdout not a pipe?)\n");
+#endif
 
     in_port[0] = jack_port_register(client, "in_1", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
     in_port[1] = jack_port_register(client, "in_2", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
@@ -102,35 +130,57 @@ int main(int argc, char **argv) {
         fprintf(stderr, "jack2pulse: cannot activate client\n");
         return 1;
     }
-    fprintf(stderr, "jack2pulse: rate=%u period=%u ringbuffer=%dms, waiting for %s1/2\n",
-            rate, jack_get_buffer_size(client), rb_ms, prefix);
+    fprintf(stderr, "jack2pulse: rate=%u period=%u target=%ld frames, waiting for %s1/2\n",
+            rate, period, target, prefix);
 
-    jack_nframes_t period = jack_get_buffer_size(client);
-    useconds_t half_period_us = (useconds_t)(500000.0 * period / rate);
+    useconds_t quarter_period_us = (useconds_t)(250000.0 * period / rate);
     char *out = malloc(rb_bytes);
     unsigned tick = 0;
     unsigned long last_over = 0;
+    double avg_fill = (double)target;     /* frames, exponential average */
+    long trim = 0;                        /* +1 drop a frame, -1 duplicate, 0 none */
+    unsigned long frames_since_trim = 0;
+    unsigned long dropped = 0, padded = 0;
+
     while (running) {
-        if ((tick++ % 25) == 0) try_connect(prefix);
+        if ((tick++ % 100) == 0) try_connect(prefix);
         size_t avail = jack_ringbuffer_read_space(rb);
-        if (avail == 0) {
-            underruns++;
-            usleep(half_period_us);
+        if (avail < 4) {
+            usleep(quarter_period_us);
             continue;
         }
-        size_t n = jack_ringbuffer_read(rb, out, avail);
-        size_t off = 0;
-        while (off < n && running) {
-            ssize_t w = write(STDOUT_FILENO, out + off, n - off);
-            if (w < 0) { running = 0; break; }
-            off += (size_t)w;
+        size_t frames = avail / 4;
+        avg_fill += 0.02 * ((double)frames - avg_fill);
+        if (avg_fill > 2.0 * target) trim = 1;
+        else if (avg_fill < 0.5 * target) trim = -1;
+        else trim = 0;
+
+        size_t n = jack_ringbuffer_read(rb, out, frames * 4);
+        frames = n / 4;
+        if (trim == 1 && frames >= 2) {
+            /* Drop one frame per 1024 played: remove the last frame of this chunk. */
+            frames_since_trim += frames;
+            if (frames_since_trim >= 1024) { frames_since_trim = 0; n -= 4; dropped++; }
+            if (write_all(out, n) < 0) break;
+        } else if (trim == -1) {
+            frames_since_trim += frames;
+            if (write_all(out, n) < 0) break;
+            if (frames_since_trim >= 1024) {
+                frames_since_trim = 0; padded++;
+                if (write_all(out + n - 4, 4) < 0) break;   /* duplicate last frame */
+            }
+        } else {
+            frames_since_trim = 0;
+            if (write_all(out, n) < 0) break;
         }
+
         if (overflows != last_over) {
-            fprintf(stderr, "jack2pulse: ring buffer overflow (%lu total) — sink slower than JACK\n", overflows);
+            fprintf(stderr, "jack2pulse: ring buffer overflow (%lu total) — sink stalled\n", overflows);
             last_over = overflows;
         }
     }
     jack_client_close(client);
-    fprintf(stderr, "jack2pulse: exit (overflows=%lu idle-polls=%lu)\n", overflows, underruns);
+    fprintf(stderr, "jack2pulse: exit (overflows=%lu dropped=%lu padded=%lu avg_fill=%.0f)\n",
+            overflows, dropped, padded, avg_fill);
     return 0;
 }

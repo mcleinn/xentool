@@ -114,16 +114,23 @@ boundary can underrun; it reports no xruns. PulseAudio's
 Solution in the launcher:
 
 ```
-jackd -d dummy -r 44100 -p 1024 -w 23220         # software clock for scsynth
-pacat --raw --format=s16le --rate=44100 --channels=2 --latency-msec=100 <fifo> &
+jackd -d dummy -r 44100 -p 512 -w 11610          # software clock for scsynth
+pacat --raw --format=s16le --rate=44100 --channels=2 --latency-msec=40 <fifo> &
 jack2pulse > <fifo>                              # scripts/termux/jack2pulse.c
 ```
 
-`jack2pulse` is a ~100-line JACK client (built with `clang … -ljack` on
-first run) that auto-connects `SuperCollider:out_1/2`, converts to
-interleaved s16 and streams through a 1 s ring buffer into the FIFO.
-44.1 kHz matches the PulseAudio sink and avoids resampling. The dummy
-backend's `-w` is its cycle time; keep it at exactly one period.
+`jack2pulse` is a small JACK client (built with `clang … -ljack` on first
+run) that auto-connects `SuperCollider:out_1/2`, converts to interleaved
+s16 and streams through a ring buffer into the FIFO. 44.1 kHz matches the
+PulseAudio sink and avoids resampling. The dummy backend's `-w` is its
+cycle time; keep it at exactly one period.
+
+Latency is actively bounded: the bridge shrinks the kernel pipe to one
+page (`F_SETPIPE_SZ`, a 64 KB pipe alone would hold ~370 ms) and steers
+the ring buffer's average fill towards one period by dropping or
+duplicating a single frame per 1024 whenever the average leaves
+[½ period, 2 periods]. That 0.1 % trim is inaudible and also absorbs the
+long-term clock drift between the dummy backend and the OpenSL sink.
 
 Two Termux quirks baked into the script:
 
@@ -134,8 +141,9 @@ Two Termux quirks baked into the script:
   priority`); the 100 ms PulseAudio latency plus the ring buffer absorb
   the jitter.
 
-Latency is roughly 1024-frame period + 100 ms Pulse latency ≈ 125 ms.
-Lower `PULSE_LATENCY_MS` / `JACK_PERIOD` if the phone keeps up.
+Expected latency: ~12 ms period + ~12 ms pipe + 40 ms Pulse target plus the
+sink's own buffer. Raise `PULSE_LATENCY_MS` / `JACK_PERIOD` if it crackles,
+lower them if the phone keeps up.
 
 ## 4. Smaller things
 
@@ -153,8 +161,5 @@ Lower `PULSE_LATENCY_MS` / `JACK_PERIOD` if the phone keeps up.
 - Multiple Exquis boards, MTS-ESP (`LIBMTS.dll` is Windows only), the
   Wooting backend, the xenharm sidecar and the studio web UIs were not
   tried on Android.
-- The jack2pulse bridge does not resample; long sessions may drift until
-  the ring buffer overflows (counted on stderr) or runs dry (silence
-  gap). A rate-adjusting bridge would fix that if it becomes audible.
 - The USB permission is per plug-in; Android forgets it when the Exquis
   is unplugged, and `termux-usb` blocks until the dialog is answered.
