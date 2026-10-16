@@ -46,7 +46,11 @@
 // Directory of this patch. `thisProcess.nowExecutingPath` is nil when the
 // file is run as `sclang file.scd` on some builds (Termux), so fall back to
 // the working directory (the launchers cd into supercollider/ first).
-~patchDir = thisProcess.nowExecutingPath !? { |p| PathName(p).pathOnly } ?? { File.getcwd };
+~patchDir = thisProcess.nowExecutingPath !? { |p| PathName(p).pathOnly } ?? { "" };
+if(~patchDir.isEmpty) { ~patchDir = File.getcwd };
+if(~patchDir.beginsWith("/").not and: { ~patchDir.beginsWith("~").not } and: { ~patchDir.contains(":").not }) {
+    ~patchDir = File.getcwd +/+ ~patchDir;   // `sclang file.scd` leaves a relative path
+};
 
 s.waitForBoot({
 
