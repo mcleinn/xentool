@@ -919,6 +919,25 @@ s.waitForBoot({
     }, '/tanpura/reset', recvPort: ~studioPort);
 
     "Studio OSC listening on udp://127.0.0.1:%".format(~studioPort).postln;
+
+    // Apply the user's curated default preset directly, so the patch sounds
+    // the same with or without the tanpura_studio relay running (on the Pi
+    // the relay pushes this file at boot; on Android/Termux it isn't
+    // running at all). The relay re-sends the same values later — harmless.
+    ~userDefaultPath = ~patchDir +/+ "tanpura_studio/presets/_default.json";
+    if(File.exists(~userDefaultPath)) {
+        try {
+            var json = File.readAllString(~userDefaultPath).parseJSON;
+            var params = json["params"];
+            var n = 0;
+            params.keysValuesDo { |k, v| ~studioApply.value(k, v); n = n + 1 };
+            "[studio] applied user default preset (% params) from %".format(n, ~userDefaultPath).postln;
+        } { |e|
+            "[studio] could not apply %: %".format(~userDefaultPath, e.errorString).postln;
+        };
+    } {
+        "[studio] no user default preset (%), using factory defaults".format(~userDefaultPath).postln;
+    };
     // ── end studio OSC ────────────────────────────────────────────────────
 
     // Boot chime: audible "I'm ready" indicator — but only once the audio

@@ -23,7 +23,8 @@ SESSION="xentool"
 # OpenSL ES default (960 ≈ 20 ms) xruns audibly with the tanpura patch;
 # 2048 (≈ 43 ms) was clean on a Pixel 7. Override with JACK_PERIOD=1024.
 JACK_PERIOD="${JACK_PERIOD:-2048}"
-JACK_WAIT_US=$(( JACK_PERIOD * 1000000 / 48000 ))
+# Engine wait slightly under one period keeps the OpenSL ES ring buffer topped up.
+JACK_WAIT_US=$(( JACK_PERIOD * 1000000 / 48000 * 95 / 100 ))
 
 for c in jackd sclang tmux termux-usb; do
     command -v "$c" >/dev/null 2>&1 || {
