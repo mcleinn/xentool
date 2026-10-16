@@ -1,13 +1,14 @@
 use anyhow::{Context, Result, bail};
+#[cfg(not(target_os = "android"))]
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput};
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::mpsc::Sender;
 
 use crate::exquis::mpe::InputMessage;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 use crate::exquis::usb::list_exquis_usb_devices;
 use crate::exquis::usb::UsbDeviceInfo;
 #[cfg(windows)]
@@ -58,6 +59,7 @@ pub struct ExquisDevice {
     pub usb_info: Option<UsbDeviceInfo>,
 }
 
+#[cfg(not(target_os = "android"))]
 pub fn list_devices() -> Result<Vec<ExquisDevice>> {
     let mut input = MidiInput::new("xentool-list-input")?;
     input.ignore(Ignore::None);
@@ -176,13 +178,21 @@ pub fn list_devices() -> Result<Vec<ExquisDevice>> {
         #[cfg(not(windows))]
         let usb_info = match_usb_info(&usb_devices, &label, i);
 
+        let input_names = input_pair
+            .as_ref()
+            .map(|(_, n)| vec![n.clone()])
+            .unwrap_or_default();
+        let output_names = output_pair
+            .as_ref()
+            .map(|(_, n)| vec![n.clone()])
+            .unwrap_or_default();
         devices.push(ExquisDevice {
             number: i + 1,
             label: display_label,
             input_name: input_pair.map(|(_, n)| n),
             output_name: output_pair.map(|(_, n)| n),
-            input_names: input_pair.as_ref().map(|(_, n)| vec![n.clone()]).unwrap_or_default(),
-            output_names: output_pair.as_ref().map(|(_, n)| vec![n.clone()]).unwrap_or_default(),
+            input_names,
+            output_names,
             usb_info,
         });
     }
@@ -228,6 +238,15 @@ fn resolve_usb_info_windows(
     })
 }
 
+/// Opaque handle for an open input; dropping it closes the port.
+#[cfg(not(target_os = "android"))]
+pub type InputConnection = MidiInputConnection<()>;
+#[cfg(target_os = "android")]
+pub type InputConnection = crate::exquis::usbmidi::InputConnection;
+
+#[cfg(target_os = "android")]
+pub use crate::exquis::usbmidi::{list_devices, open_inputs, send_to_outputs};
+
 pub fn select_devices(
     devices: &[ExquisDevice],
     selection: &DeviceSelection,
@@ -245,6 +264,7 @@ pub fn select_devices(
     }
 }
 
+#[cfg(not(target_os = "android"))]
 pub fn send_to_outputs(
     devices: &[ExquisDevice],
     selection: DeviceSelection,
@@ -288,10 +308,11 @@ pub fn send_to_outputs(
     Ok(())
 }
 
+#[cfg(not(target_os = "android"))]
 pub fn open_inputs(
     devices: &[ExquisDevice],
     tx: Sender<InputMessage>,
-) -> Result<Vec<MidiInputConnection<()>>> {
+) -> Result<Vec<InputConnection>> {
     let mut connections = Vec::new();
     for device in devices {
         let target_names: Vec<&str> = if device.input_names.is_empty() {
@@ -348,7 +369,7 @@ pub fn open_inputs(
     Ok(connections)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 #[derive(Debug)]
 struct LinuxExquisPorts {
     client_name: String,
@@ -356,7 +377,7 @@ struct LinuxExquisPorts {
     output_names: Vec<String>,
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 fn parse_linux_exquis_port(name: &str) -> Option<(u32, String)> {
     let (client_name, rest) = name.split_once(':')?;
     if !client_name.eq_ignore_ascii_case("Exquis") {
@@ -371,10 +392,12 @@ fn parse_linux_exquis_port(name: &str) -> Option<(u32, String)> {
     Some((client_id, client_name.to_string()))
 }
 
+#[cfg(not(target_os = "android"))]
 fn is_exquis_port(name: &str) -> bool {
     name.to_ascii_lowercase().contains("exquis")
 }
 
+#[cfg(not(target_os = "android"))]
 /// Find the Nth port whose name matches `target_name` (handling duplicate port names).
 fn find_nth_port_by_name<T: Clone>(
     ports: &[T],
@@ -393,7 +416,7 @@ fn find_nth_port_by_name<T: Clone>(
         .or_else(|| matches.first().cloned())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 fn match_usb_info(
     usb_devices: &[UsbDeviceInfo],
     label: &str,

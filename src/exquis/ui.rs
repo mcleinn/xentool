@@ -452,7 +452,7 @@ pub type RetuneCycleCallback<'a> = &'a mut dyn FnMut(
     u8,
     bool,
     &mut std::collections::HashMap<usize, TuningState>,
-    &mut midir::MidiOutputConnection,
+    &mut crate::midi_out::MidiOutPort,
 ) -> Result<()>;
 
 #[allow(clippy::too_many_arguments)]
@@ -462,7 +462,7 @@ pub fn run_serve_retune_ui(
     pb_range: f64,
     x_gain: f64,
     tunings: &mut std::collections::HashMap<usize, TuningState>,
-    output: &mut midir::MidiOutputConnection,
+    output: &mut crate::midi_out::MidiOutPort,
     display: DisplayHandle,
     hud_ctx: Option<crate::exquis::hud_ctx::HudExquisHandle>,
     hud_url: Option<String>,

@@ -10,9 +10,84 @@
 //! On Windows, WinMM has no virtual-port API, so we connect to an
 //! existing port by name (typically "loopMIDI Port" — installed by the
 //! user via Tobias Erichsen's loopMIDI).
+//!
+//! On every platform an output name of the form `osc://host:port` sends
+//! the MIDI stream as OSC instead (`/xentool/midi status d1 d2`, plus
+//! `/xentool/sysex <blob>`). This is the only option on Android/Termux,
+//! which has no MIDI ports at all; the bundled SuperCollider patches
+//! accept it via `supercollider/xentool_osc_midi.scd`.
 
 use anyhow::Result;
+#[cfg(not(target_os = "android"))]
 use midir::{MidiOutput, MidiOutputConnection};
+
+/// Prefix that selects the OSC transport in `--output`.
+pub const OSC_PREFIX: &str = "osc://";
+
+/// A MIDI output stream sent as OSC datagrams. Fire-and-forget UDP.
+pub struct OscMidiOut {
+    socket: std::net::UdpSocket,
+    target: std::net::SocketAddr,
+}
+
+impl OscMidiOut {
+    /// `spec` is `host:port` (the part after `osc://`).
+    pub fn open(spec: &str) -> Result<Self> {
+        use anyhow::Context;
+        use std::net::ToSocketAddrs;
+        let target = spec
+            .to_socket_addrs()
+            .with_context(|| format!("invalid OSC target `{spec}` (expected host:port)"))?
+            .next()
+            .with_context(|| format!("OSC target `{spec}` did not resolve"))?;
+        let bind = if target.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+        let socket = std::net::UdpSocket::bind(bind)?;
+        Ok(Self { socket, target })
+    }
+
+    pub fn send(&self, msg: &[u8]) -> Result<()> {
+        use rosc::{OscMessage, OscPacket, OscType};
+        if msg.is_empty() {
+            return Ok(());
+        }
+        let packet = if msg[0] == 0xF0 {
+            OscPacket::Message(OscMessage {
+                addr: "/xentool/sysex".to_string(),
+                args: vec![OscType::Blob(msg.to_vec())],
+            })
+        } else {
+            let d1 = msg.get(1).copied().unwrap_or(0) as i32;
+            let d2 = msg.get(2).copied().unwrap_or(0) as i32;
+            OscPacket::Message(OscMessage {
+                addr: "/xentool/midi".to_string(),
+                args: vec![OscType::Int(msg[0] as i32), OscType::Int(d1), OscType::Int(d2)],
+            })
+        };
+        let bytes = rosc::encoder::encode(&packet)
+            .map_err(|e| anyhow::anyhow!("OSC encode error: {e:?}"))?;
+        self.socket.send_to(&bytes, self.target)?;
+        Ok(())
+    }
+}
+
+/// Platform-neutral MIDI output handle used by both backends' serve loops.
+pub enum MidiOutPort {
+    #[cfg(not(target_os = "android"))]
+    Midi(MidiOutputConnection),
+    Osc(OscMidiOut),
+}
+
+impl MidiOutPort {
+    pub fn send(&mut self, msg: &[u8]) -> Result<()> {
+        match self {
+            #[cfg(not(target_os = "android"))]
+            Self::Midi(conn) => conn
+                .send(msg)
+                .map_err(|e| anyhow::anyhow!("MIDI send error: {e}")),
+            Self::Osc(osc) => osc.send(msg),
+        }
+    }
+}
 
 /// A MIDI output that looks like a hardware device to JACK/MODEP on Linux.
 /// On other platforms this is just a thin wrapper around midir.
@@ -27,7 +102,7 @@ pub struct HwMidiOut {
     #[cfg(target_os = "linux")]
     _input_seq: alsa::seq::Seq,
     #[cfg(not(target_os = "linux"))]
-    conn: MidiOutputConnection,
+    conn: MidiOutPort,
 }
 
 impl HwMidiOut {
@@ -125,9 +200,7 @@ impl HwMidiOut {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            self.conn
-                .send(msg)
-                .map_err(|e| anyhow::anyhow!("MIDI send error: {e}"))
+            self.conn.send(msg)
         }
     }
 }
@@ -191,9 +264,27 @@ pub fn open_output_bidirectional(
 }
 
 /// Opens a plain virtual output (no hardware flags, no dummy input).
-/// Used by the Exquis backend and as fallback.
-#[cfg(unix)]
-pub fn open_output(client: &str, port_name: &str) -> Result<MidiOutputConnection> {
+/// Used by the Exquis backend and as fallback. `osc://host:port` selects
+/// the OSC transport on every platform.
+pub fn open_output(client: &str, port_name: &str) -> Result<MidiOutPort> {
+    if let Some(spec) = port_name.strip_prefix(OSC_PREFIX) {
+        return Ok(MidiOutPort::Osc(OscMidiOut::open(spec)?));
+    }
+    #[cfg(target_os = "android")]
+    {
+        let _ = client;
+        anyhow::bail!(
+            "MIDI output port `{port_name}` is not available on Android/Termux (no MIDI              sequencer). Use `--output osc://127.0.0.1:57120` and load              supercollider/xentool_osc_midi.scd in sclang."
+        );
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        open_midi_output(client, port_name).map(MidiOutPort::Midi)
+    }
+}
+
+#[cfg(all(unix, not(target_os = "android")))]
+fn open_midi_output(client: &str, port_name: &str) -> Result<MidiOutputConnection> {
     use midir::os::unix::VirtualOutput;
     let out = MidiOutput::new(client)?;
     out.create_virtual(port_name)
@@ -201,7 +292,7 @@ pub fn open_output(client: &str, port_name: &str) -> Result<MidiOutputConnection
 }
 
 #[cfg(not(unix))]
-pub fn open_output(client: &str, port_name: &str) -> Result<MidiOutputConnection> {
+fn open_midi_output(client: &str, port_name: &str) -> Result<MidiOutputConnection> {
     use anyhow::Context;
     let out = MidiOutput::new(client)?;
     let port = out
@@ -210,9 +301,7 @@ pub fn open_output(client: &str, port_name: &str) -> Result<MidiOutputConnection
         .find(|p| out.port_name(p).ok().as_deref() == Some(port_name))
         .with_context(|| {
             format!(
-                "MIDI output port `{port_name}` not found. \
-                 Install loopMIDI (https://www.tobias-erichsen.de/software/loopmidi.html) \
-                 and create a port named \"{port_name}\"."
+                "MIDI output port `{port_name}` not found.                  Install loopMIDI (https://www.tobias-erichsen.de/software/loopmidi.html)                  and create a port named \"{port_name}\"."
             )
         })?;
     out.connect(&port, "xentool-out")

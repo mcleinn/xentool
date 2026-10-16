@@ -7,7 +7,6 @@
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 #[cfg(not(target_os = "linux"))]
-use midir::MidiOutputConnection;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -175,7 +174,7 @@ struct MidiOut {
     #[cfg(target_os = "linux")]
     conn: crate::midi_out::HwMidiOut,
     #[cfg(not(target_os = "linux"))]
-    conn: MidiOutputConnection,
+    conn: crate::midi_out::MidiOutPort,
     #[cfg(target_os = "linux")]
     jack: Option<jack_midi::JackMidiOut>,
 }

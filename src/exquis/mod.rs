@@ -14,5 +14,7 @@ pub mod proto;
 pub mod tuning;
 pub mod ui;
 pub mod usb;
+#[cfg(target_os = "android")]
+pub mod usbmidi;
 #[cfg(windows)]
 pub mod winmm_drv;

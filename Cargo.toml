@@ -9,7 +9,6 @@ clap = { version = "4.5", features = ["derive"] }
 ctrlc = "3.4"
 crossterm = "0.28"
 directories = "5.0"
-midir = "0.10"
 ratatui = "0.29"
 rusb = { version = "0.9", features = ["vendored"] }
 libloading = "0.8"
@@ -30,12 +29,19 @@ arc-swap = "1.7"
 # synchronous client; runs on a background thread so the SSE/HTTP path
 # never blocks waiting on it.
 ureq = { version = "2.10", default-features = false, features = ["json"] }
-# Clipboard support for the HUD-URL fallback modal — used when the TUI
-# can't open a browser (console-only environment).
-arboard = "3.6"
 # OSC ingestion for the HUD — SuperCollider (or any OSC client) can push
 # parameter values that the HUD displays alongside the played notes.
 rosc = "0.10"
+
+# midir has no Android backend (Termux has no ALSA sequencer either). On
+# Android the Exquis is driven as a raw USB-MIDI class device through rusb
+# (see src/exquis/usbmidi.rs) and the synth output goes over OSC.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+midir = "0.10"
+# Clipboard support for the HUD-URL fallback modal — used when the TUI
+# can't open a browser (console-only environment). Android uses
+# `termux-clipboard-set` instead.
+arboard = "3.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 jack = "0.11"

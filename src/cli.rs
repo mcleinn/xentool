@@ -8,10 +8,16 @@ use crate::exquis::proto::{Color, ColorCorrection, NamedZone};
 /// cable (loopMIDI); on Linux/macOS xentool creates its own subscribable
 /// port via ALSA seq / CoreMIDI, so the default is a backend-specific
 /// name other apps (MOD pedalboard, Pianoteq, SuperCollider) will see.
-#[cfg(unix)]
+/// On Android/Termux there are no MIDI ports at all, so both backends
+/// default to OSC straight into sclang (see `midi_out::OscMidiOut`).
+#[cfg(all(unix, not(target_os = "android")))]
 pub const DEFAULT_OUTPUT_WOOTING: &str = "Xentool Wooting";
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "android")))]
 pub const DEFAULT_OUTPUT_EXQUIS: &str = "Xentool Exquis MPE";
+#[cfg(target_os = "android")]
+pub const DEFAULT_OUTPUT_WOOTING: &str = "osc://127.0.0.1:57120";
+#[cfg(target_os = "android")]
+pub const DEFAULT_OUTPUT_EXQUIS: &str = "osc://127.0.0.1:57120";
 #[cfg(not(unix))]
 pub const DEFAULT_OUTPUT_WOOTING: &str = "loopMIDI Port";
 #[cfg(not(unix))]
@@ -61,6 +67,10 @@ pub struct Cli {
 pub enum Commands {
     /// Explain commands and usage.
     Help { command: Option<String> },
+    /// (internal) Print the USB device behind `TERMUX_USB_FD`; used by the
+    /// Android bootstrap to find the Exquis among `termux-usb -l` devices.
+    #[command(hide = true, name = "usb-probe")]
+    UsbProbe,
     /// List detected Exquis MIDI devices.
     List,
     /// Monitor incoming MIDI/MPE data.

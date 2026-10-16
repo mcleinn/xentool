@@ -23,10 +23,20 @@ use exquis::midi::{DeviceSelection, list_devices};
 use exquis::proto::color_help_text;
 
 fn main() -> Result<()> {
+    // Android/Termux: the Exquis is only reachable through a file
+    // descriptor handed over by `termux-usb`. Re-exec ourselves under it
+    // when the command needs the device (see exquis::usbmidi::bootstrap).
+    #[cfg(target_os = "android")]
+    let cli = Cli::parse_from(exquis::usbmidi::bootstrap(needs_exquis_device));
+    #[cfg(not(target_os = "android"))]
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Help { command } => print_help(command.as_deref()),
+        #[cfg(target_os = "android")]
+        Commands::UsbProbe => exquis::usbmidi::cmd_usb_probe(),
+        #[cfg(not(target_os = "android"))]
+        Commands::UsbProbe => bail!("usb-probe is only meaningful on Android/Termux"),
         Commands::List => cmd_list(),
         Commands::Midi(args) => cmd_midi(args),
         Commands::Dev { action, zones } => cmd_dev(action, zones),
@@ -167,6 +177,40 @@ fn print_help(command: Option<&str>) -> Result<()> {
         println!();
         println!("Color syntax: {}", color_help_text());
         Ok(())
+    }
+}
+
+/// Android bootstrap predicate: does this invocation talk to an Exquis?
+/// Decided from the raw args so we can re-exec under `termux-usb` before
+/// clap runs. Wooting-routed `serve`/`load`/`new` (a `.wtn` argument) and
+/// pure tooling commands return false.
+#[cfg(target_os = "android")]
+fn needs_exquis_device(args: &[String]) -> bool {
+    let Some(cmd) = args.iter().find(|a| !a.starts_with('-')) else {
+        return false;
+    };
+    let positionals: Vec<&String> = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .skip(1)
+        .collect();
+    match cmd.as_str() {
+        "list" | "midi" | "dev" | "pads" | "pad" | "control" | "highlight" => true,
+        "serve" | "load" => {
+            if positionals
+                .iter()
+                .any(|a| a.to_ascii_lowercase().ends_with(".wtn"))
+            {
+                return false;
+            }
+            // `serve` with no FILE falls back to the persisted layout; a
+            // persisted .wtn wins there (see the Serve arm below).
+            if cmd == "serve" && positionals.is_empty() {
+                return settings::load().last_wtn.is_none();
+            }
+            true
+        }
+        _ => false,
     }
 }
 
