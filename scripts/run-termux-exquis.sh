@@ -2,7 +2,8 @@
 # xentool on Android / Termux (Exquis flow).
 #
 # Opens a tmux session with three windows:
-#   jack     — jackd on the OpenSL ES backend (scsynth needs JACK on Linux builds)
+#   jack     — jackd on the OpenSL ES backend (scsynth needs JACK on Linux builds);
+#              JACK_PERIOD env var tunes latency vs. crackling (default 2048)
 #   sc       — sclang running supercollider/mpe_tanpura_xentool.scd
 #   xentool  — `xentool serve <layout> --hud`, re-executed under termux-usb
 #              automatically (accept the USB permission dialog once per plug-in)
@@ -18,6 +19,11 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LAYOUT="${1:-xtn/edo31.xtn}"
 SESSION="xentool"
+# JACK period in frames. Android grants no realtime scheduling, so the
+# OpenSL ES default (960 ≈ 20 ms) xruns audibly with the tanpura patch;
+# 2048 (≈ 43 ms) was clean on a Pixel 7. Override with JACK_PERIOD=1024.
+JACK_PERIOD="${JACK_PERIOD:-2048}"
+JACK_WAIT_US=$(( JACK_PERIOD * 1000000 / 48000 ))
 
 for c in jackd sclang tmux termux-usb; do
     command -v "$c" >/dev/null 2>&1 || {
@@ -37,7 +43,7 @@ fi
 if pgrep -x jackd >/dev/null 2>&1; then
     tmux new-session -d -s "$SESSION" -n jack "echo 'jackd already running'; sleep infinity"
 else
-    tmux new-session -d -s "$SESSION" -n jack "jackd -d opensles"
+    tmux new-session -d -s "$SESSION" -n jack "jackd -d opensles -p $JACK_PERIOD -w $JACK_WAIT_US"
     sleep 2
 fi
 tmux new-window -t "$SESSION" -n sc \
