@@ -114,15 +114,26 @@ boundary can underrun; it reports no xruns. PulseAudio's
 Solution in the launcher:
 
 ```
-jackd -d dummy -r 44100 -p 512 -w 11610          # software clock for scsynth
-pacat --raw --format=s16le --rate=44100 --channels=2 --latency-msec=40 <fifo> &
+pactl load-module module-aaudio-sink sink_name=xentool_aaudio rate=48000
+jackd -d dummy -r 48000 -p 512 -w 10666          # software clock for scsynth
+pacat --raw --format=s16le --rate=48000 --channels=2 --latency-msec=20       --device=xentool_aaudio <fifo> &
 jack2pulse > <fifo>                              # scripts/termux/jack2pulse.c
 ```
 
+PulseAudio's default `OpenSL_ES_sink` is clean but slow: `module-sles-sink`
+uses a fixed 125 ms block (`latency=` argument) and pacat's stream sat at
+~140 ms on top, which made pad-to-sound lag obvious. Termux's PulseAudio
+also ships `module-aaudio-sink` (Android's low-latency audio API,
+`AAUDIO_PERFORMANCE_MODE_LOW_LATENCY` by default); loaded at runtime as an
+*extra* sink it measured 18 ms stream + 8 ms sink latency. No PulseAudio
+config file is changed and the default sink/source stay as they are (the
+TTS + microphone setup on the phone keeps working); the sink vanishes
+when PulseAudio restarts and the launcher re-creates it.
+
 `jack2pulse` is a small JACK client (built with `clang … -ljack` on first
 run) that auto-connects `SuperCollider:out_1/2`, converts to interleaved
-s16 and streams through a ring buffer into the FIFO. 44.1 kHz matches the
-PulseAudio sink and avoids resampling. The dummy backend's `-w` is its
+s16 and streams through a ring buffer into the FIFO. 48 kHz matches the AAudio
+sink and avoids resampling (use 44.1 kHz with the OpenSL sink). The dummy backend's `-w` is its
 cycle time; keep it at exactly one period.
 
 Latency is actively bounded: the bridge shrinks the kernel pipe to one
@@ -141,9 +152,9 @@ Two Termux quirks baked into the script:
   priority`); the 100 ms PulseAudio latency plus the ring buffer absorb
   the jitter.
 
-Expected latency: ~12 ms period + ~12 ms pipe + 40 ms Pulse target plus the
-sink's own buffer. Raise `PULSE_LATENCY_MS` / `JACK_PERIOD` if it crackles,
-lower them if the phone keeps up.
+Expected latency: ~11 ms period + ~11 ms pipe + 20 ms Pulse target + 8 ms
+AAudio. Raise `PULSE_LATENCY_MS` / `JACK_PERIOD` if it crackles, lower them
+if the phone keeps up; `PULSE_SINK=OpenSL_ES_sink` selects the default sink.
 
 ## 4. Smaller things
 
