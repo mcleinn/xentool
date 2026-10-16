@@ -202,11 +202,19 @@ s.waitForBoot({
     ~mpeReverbSynth = Synth.tail(s, \mpeReverb);
     ~mpeMasterSynth = Synth.tail(s, \mpeMaster);
 
-    MIDIClient.init;
+    // Android/Termux has no MIDI backend at all: MIDIClient.init throws.
+    // xentool then feeds us over OSC instead (see xentool_osc_midi.scd,
+    // loaded below), so a failed init is informational, not fatal.
+    ~midiAvailable = try { MIDIClient.init; true } { |e|
+        "[!] MIDIClient.init failed (%) — MIDI ports unavailable, using the xentool OSC bridge only."
+            .format(e.errorString).postln;
+        false
+    };
+    ~midiSources = if(~midiAvailable) { MIDIClient.sources ? [] } { [] };
 
     "".postln;
     "=== MIDI input sources ===".postln;
-    MIDIClient.sources.do { |src, i|
+    ~midiSources.do { |src, i|
         "  [%] uid=%  device=\"%\"  port=\"%\"".format(i, src.uid, src.device, src.name).postln;
     };
     "===========================".postln;
@@ -216,17 +224,23 @@ s.waitForBoot({
     // older manual Linux setups that still route xentool there.
     ~preferredPortMatches = ["xentool-serve", "xentool exquis", "loopmidi"];
     ~fallbackPortMatches = ["midi through", "midithrough"];
-    ~xentoolSrc = MIDIClient.sources.detect({ |src|
+    ~xentoolSrc = ~midiSources.detect({ |src|
         var dev = src.device.toLower, nam = src.name.toLower;
         ~preferredPortMatches.any({ |m| dev.contains(m) or: { nam.contains(m) } })
     });
     if(~xentoolSrc.isNil) {
-        ~xentoolSrc = MIDIClient.sources.detect({ |src|
+        ~xentoolSrc = ~midiSources.detect({ |src|
             var dev = src.device.toLower, nam = src.name.toLower;
             ~fallbackPortMatches.any({ |m| dev.contains(m) or: { nam.contains(m) } })
         });
     };
     ~xentoolUid = ~xentoolSrc !? { |src| src.uid };
+
+    // OSC → MIDIdef bridge (inert unless xentool runs with --output osc://…,
+    // the Android/Termux default). Tag its events with the same source uid
+    // the MIDIdefs below filter on, so they pass `srcID: ~xentoolUid`.
+    ~xentoolOscSrc = ~xentoolUid ? 0;
+    (PathName(thisProcess.nowExecutingPath).pathOnly +/+ "xentool_osc_midi.scd").load;
 
     // Subscribe ONLY to xentool's source. The previous `MIDIIn.connectAll`
     // call hangs sclang on Linux setups with many ALSA seq clients (typical
@@ -637,7 +651,7 @@ s.waitForBoot({
     "".postln;
 
     ~deviceFor = { |uid|
-        var d = MIDIClient.sources.detect({ |x| x.uid == uid });
+        var d = ~midiSources.detect({ |x| x.uid == uid });
         if(d.notNil) { "%/%".format(d.device, d.name) } { "uid=" ++ uid }
     };
 
@@ -812,7 +826,7 @@ s.waitForBoot({
         ~logEvent.((
             t: Main.elapsedTime, kind: \loggerStart,
             xentoolUid: ~xentoolUid,
-            sourcesAvailable: MIDIClient.sources.collect { |s|
+            sourcesAvailable: ~midiSources.collect { |s|
                 "uid=" ++ s.uid ++ " device=\"" ++ s.device ++ "\" port=\"" ++ s.name ++ "\""
             }.asArray
         ));

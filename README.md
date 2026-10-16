@@ -206,6 +206,33 @@ cargo test            # full test suite
 
 ---
 
+### Android (Termux) — experimental, Exquis only
+
+Tested on a Pixel 7 with the Exquis plugged straight into USB-C. Termux has
+no MIDI ports at all (no ALSA sequencer, midir has no Android backend), so
+the Android build differs in two ways:
+
+- the Exquis is driven as a raw USB-MIDI class device through libusb on a
+  file descriptor handed over by `termux-usb`. xentool does this itself:
+  any command that needs the device re-executes under `termux-usb`
+  (accept the USB permission dialog once per plug-in). Only one Exquis is
+  supported.
+- the retuned MIDI stream goes to SuperCollider as OSC
+  (`--output osc://127.0.0.1:57120` is the Android default). The bundled
+  patches load `supercollider/xentool_osc_midi.scd`, which feeds those
+  messages into the usual MIDIdefs.
+
+```bash
+pkg install rust git clang pkg-config libusb termux-api supercollider jack2 tmux
+# plus the Termux:API companion app from F-Droid / Play
+git clone https://github.com/mcleinn/xentool.git ~/dev/xentool
+cd ~/dev/xentool && cargo build --release
+scripts/run-termux-exquis.sh xtn/edo31.xtn   # jackd (OpenSL ES) + sclang + xentool serve in tmux
+```
+
+Not available on Android: MTS-ESP, the Wooting backend (no SDK), multiple
+Exquis boards, the xenharm sidecar (untested).
+
 ## Quick start
 
 1. Plug in your Exquis or Wooting.

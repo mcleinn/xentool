@@ -22,6 +22,7 @@ Top-level (cross-device or pure tooling):
 - `src/layouts.rs` — shared `.wtn` / `.xtn` discovery and cycle order.
 - `src/logging.rs` — JSONL session logging.
 - `src/mts.rs` — MTS-ESP FFI bindings via libloading (runtime-loaded LIBMTS.dll). Used by both backends.
+- `src/midi_out.rs` — `MidiOutPort` (midir virtual/loopMIDI port, or `osc://host:port` → `/xentool/midi status d1 d2` UDP). OSC is the only transport on Android; `supercollider/xentool_osc_midi.scd` turns it back into MIDIdef callbacks.
 - `src/settings.rs` — central settings.json (`exquis` section reserved; `wooting` section ports xenwooting defaults verbatim).
 - `src/xtn.rs` — .xtn layout file parser (INI-style, compatible with .wtn/.ltn).
 
@@ -30,6 +31,7 @@ Exquis backend (`src/exquis/`):
 - `proto.rs` — Exquis SysEx message builders, Color type, zone bitmasks, control ID mapping.
 - `midi.rs` — MIDI device discovery and I/O.
 - `usb.rs` — USB enumeration for Exquis hardware.
+- `usbmidi.rs` — Android/Termux only: USB-MIDI class driver over rusb on the fd exported by `termux-usb -E`; `bootstrap()` re-execs xentool under `termux-usb` (args via `XENTOOL_REEXEC_ARGS`), hidden `usb-probe` subcommand. `midi.rs` re-exports its `list_devices`/`open_inputs`/`send_to_outputs` on Android; midir is compiled out there.
 - `mpe.rs` — MPE event decoding (pitch bend → X, CC74 → Y, pressure → Z).
 - `tuning.rs` — pitch bend retuning engine (per-channel state, note remapping, bend injection).
 - `ui.rs` — terminal UI for hybrid MIDI monitoring + serve (active-touches table, controls panel, scrolling event log).

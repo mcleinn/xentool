@@ -187,12 +187,22 @@ s.waitForBoot({
     ~pianoReverbSynth = Synth.tail(s, \pianoReverb);
     ~pianoMasterSynth = Synth.tail(s, \pianoMaster);
 
-    MIDIClient.init;
-    MIDIIn.connectAll;
+    // Android/Termux has no MIDI backend at all: MIDIClient.init throws.
+    // xentool then feeds us over OSC instead (see xentool_osc_midi.scd,
+    // loaded below), so a failed init is informational, not fatal.
+    ~midiAvailable = try { MIDIClient.init; MIDIIn.connectAll; true } { |e|
+        "[!] MIDIClient.init failed (%) — MIDI ports unavailable, using the xentool OSC bridge only."
+            .format(e.errorString).postln;
+        false
+    };
+    ~midiSources = if(~midiAvailable) { MIDIClient.sources ? [] } { [] };
+
+    // OSC → MIDIdef bridge (inert unless xentool runs with --output osc://…).
+    (PathName(thisProcess.nowExecutingPath).pathOnly +/+ "xentool_osc_midi.scd").load;
 
     "".postln;
     "=== MIDI input sources ===".postln;
-    MIDIClient.sources.do { |src, i|
+    ~midiSources.do { |src, i|
         "  [%] uid=%  device=\"%\"  port=\"%\"".format(
             i, src.uid, src.device, src.name
         ).postln;
@@ -279,7 +289,7 @@ s.waitForBoot({
     ~noteNames  = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
     ~noteName   = { |n| ~noteNames[n % 12] ++ ((n / 12).floor - 1).asInteger };
     ~deviceFor  = { |uid|
-        var d = MIDIClient.sources.detect({ |x| x.uid == uid });
+        var d = ~midiSources.detect({ |x| x.uid == uid });
         if(d.notNil) { "%/%".format(d.device, d.name) } { "uid=" ++ uid }
     };
     ~stamp      = { Date.getDate.format("%H:%M:%S") };
