@@ -222,13 +222,19 @@ the Android build differs in two ways:
   patches load `supercollider/xentool_osc_midi.scd`, which feeds those
   messages into the usual MIDIdefs.
 
+- scsynth's audio goes through JACK's `dummy` backend and a tiny bridge
+  (`scripts/termux/jack2pulse.c`) into PulseAudio, because jack2's own
+  OpenSL ES backend crackles at every period size.
+
 ```bash
-pkg install rust git clang pkg-config libusb termux-api supercollider jack2 tmux
+pkg install rust git clang pkg-config libusb termux-api supercollider jack2 pulseaudio tmux
 # plus the Termux:API companion app from F-Droid / Play
 git clone https://github.com/mcleinn/xentool.git ~/dev/xentool
 cd ~/dev/xentool && cargo build --release
-scripts/run-termux-exquis.sh xtn/edo31.xtn   # jackd (OpenSL ES) + sclang + xentool serve in tmux
+scripts/run-termux-exquis.sh xtn/edo31.xtn   # jackd + bridge + sclang + xentool serve in tmux
 ```
+
+Full write-up of every Android-specific change: [docs/android_termux.md](docs/android_termux.md).
 
 Not available on Android: MTS-ESP, the Wooting backend (no SDK), multiple
 Exquis boards, the xenharm sidecar (untested).
