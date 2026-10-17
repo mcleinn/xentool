@@ -60,7 +60,14 @@ pub fn run_hybrid(
     // serve/load init sequence so X-axis breakage can be traced precisely.
     events.push("[bisect] 1=dev0x3E 2=dev0x3A 3=snap(PBR=0E) 6=snap(PBR=30) 7=snap(PBR=00) 8=snap(zeros) 9=GET-snapshot 4=paintCtrls 5=cmd04 0=exitDev q=quit".to_string());
 
+    // Redraw budget: with dense MPE traffic (pressure + bend streams) the
+    // loop iterates hundreds of times per second; drawing on every message
+    // cost ~30 % of a phone core. Draw at most every 40 ms, plus whenever the
+    // channel went idle so the last event is always on screen.
+    let mut last_draw = std::time::Instant::now() - Duration::from_millis(40);
+    let mut idle = false;
     let result = loop {
+        idle = false;
         match rx.recv_timeout(Duration::from_millis(40)) {
             Ok(message) => {
                 // Capture SysEx replies (especially snapshot responses) before
@@ -111,10 +118,14 @@ pub fn run_hybrid(
                     events.push(line);
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => { idle = true; }
             Err(RecvTimeoutError::Disconnected) => break Ok(()),
         }
 
+        if !idle && last_draw.elapsed() < Duration::from_millis(40) {
+            continue;
+        }
+        last_draw = std::time::Instant::now();
         terminal.draw(|frame| {
             let vertical = Layout::default()
                 .direction(Direction::Vertical)
@@ -306,7 +317,14 @@ pub fn run_serve_ui(
         std::collections::HashMap::new();
     let mut last_hud_submit = std::time::Instant::now();
 
+    // Redraw budget: with dense MPE traffic (pressure + bend streams) the
+    // loop iterates hundreds of times per second; drawing on every message
+    // cost ~30 % of a phone core. Draw at most every 40 ms, plus whenever the
+    // channel went idle so the last event is always on screen.
+    let mut last_draw = std::time::Instant::now() - Duration::from_millis(40);
+    let mut idle = false;
     let result = loop {
+        idle = false;
         match rx.recv_timeout(Duration::from_millis(40)) {
             Ok(message) => {
                 controls.apply(&message.bytes);
@@ -341,7 +359,7 @@ pub fn run_serve_ui(
                     last_hud_submit = std::time::Instant::now();
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => { idle = true; }
             Err(RecvTimeoutError::Disconnected) => break Ok(()),
         }
 
@@ -363,6 +381,10 @@ pub fn run_serve_ui(
             events_title.push_str(&format!(" | HUD: {url} (h)"));
         }
 
+        if !idle && last_draw.elapsed() < Duration::from_millis(40) {
+            continue;
+        }
+        last_draw = std::time::Instant::now();
         terminal.draw(|frame| {
             let vertical = Layout::default()
                 .direction(Direction::Vertical)
@@ -467,12 +489,21 @@ pub fn run_serve_retune_ui(
     hud_ctx: Option<crate::exquis::hud_ctx::HudExquisHandle>,
     hud_url: Option<String>,
     on_control_edge: RetuneCycleCallback,
+    headless: bool,
 ) -> Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    // Headless (`serve --no-tui`): same retune loop, no terminal at all.
+    // Saves a whole core worth of redraws on small hosts (Termux); quit
+    // with Ctrl-C. Layout cycling and errors still log via eprintln.
+    let mut terminal = if headless {
+        println!("xentool: headless serve (no TUI); Ctrl-C to quit");
+        None
+    } else {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+        let backend = CrosstermBackend::new(stdout);
+        Some(Terminal::new(backend)?)
+    };
 
     let mut decoder = Decoder::default();
     let mut controls = ControlStateTracker::default();
@@ -487,7 +518,14 @@ pub fn run_serve_retune_ui(
     // the browser. Cheap when HUD is off (we early-exit on `hud_ctx`).
     let mut last_hud_submit = std::time::Instant::now();
 
+    // Redraw budget: with dense MPE traffic (pressure + bend streams) the
+    // loop iterates hundreds of times per second; drawing on every message
+    // cost ~30 % of a phone core. Draw at most every 40 ms, plus whenever the
+    // channel went idle so the last event is always on screen.
+    let mut last_draw = std::time::Instant::now() - Duration::from_millis(40);
+    let mut idle = false;
     let result = loop {
+        idle = false;
         match rx.recv_timeout(Duration::from_millis(40)) {
             Ok(message) => {
                 controls.apply(&message.bytes);
@@ -550,7 +588,7 @@ pub fn run_serve_retune_ui(
                     last_hud_submit = std::time::Instant::now();
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => { idle = true; }
             Err(RecvTimeoutError::Disconnected) => break Ok(()),
         }
 
@@ -573,6 +611,13 @@ pub fn run_serve_retune_ui(
             events_title.push_str(&format!(" | HUD: {url} (h)"));
         }
 
+        let Some(terminal) = terminal.as_mut() else {
+            continue;
+        };
+        if !idle && last_draw.elapsed() < Duration::from_millis(40) {
+            continue;
+        }
+        last_draw = std::time::Instant::now();
         terminal.draw(|frame| {
             let vertical = Layout::default()
                 .direction(Direction::Vertical)
@@ -651,9 +696,11 @@ pub fn run_serve_retune_ui(
         }
     };
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    if let Some(mut terminal) = terminal {
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        terminal.show_cursor()?;
+    }
     result
 }
 

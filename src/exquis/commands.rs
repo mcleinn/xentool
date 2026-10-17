@@ -296,6 +296,7 @@ pub fn cmd_serve(
     osc_port: u16,
     tune_supercollider: bool,
     correction: exquis::proto::ColorCorrection,
+    no_tui: bool,
 ) -> Result<()> {
     let mut current_layout_path: std::path::PathBuf = file.clone();
     let layout = xtn::parse_xtn(&file)?;
@@ -870,6 +871,7 @@ pub fn cmd_serve(
                 });
                 Ok(())
             },
+            no_tui,
         )?;
     }
 

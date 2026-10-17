@@ -157,6 +157,10 @@ pub enum Commands {
         /// output remains active.
         #[arg(long)]
         jack_midi_mirror: bool,
+        /// Run without the terminal UI (plain log, Ctrl-C to quit). Saves a
+        /// lot of CPU on small hosts such as Android/Termux. Exquis only.
+        #[arg(long)]
+        no_tui: bool,
         #[command(flatten)]
         color: ColorCorrectionArgs,
     },

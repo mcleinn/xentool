@@ -156,6 +156,32 @@ Expected latency: ~11 ms period + ~11 ms pipe + 20 ms Pulse target + 8 ms
 AAudio. Raise `PULSE_LATENCY_MS` / `JACK_PERIOD` if it crackles, lower them
 if the phone keeps up; `PULSE_SINK=OpenSL_ES_sink` selects the default sink.
 
+### Measuring glitches instead of listening
+
+JACK's dummy backend reports an xrun whenever scsynth or the bridge did
+not finish within a cycle; in async mode that repeats the previous
+buffer, which sounds like crackle or "overdriven amp" distortion. A
+reproducible test injects two-note chords with dense MPE expression over
+OSC and counts xruns (`~/dev/xruntest.sh` on the phone; the bridge also
+prints peak/clip counts so real clipping can be ruled out):
+
+| configuration (AAudio sink)                 | xruns / 20 s |
+|---------------------------------------------|--------------|
+| 512-frame period, with TUI                  | 301          |
+| 512, pinned to the fast cores               | 173          |
+| 1024, with TUI                              | 61           |
+| 1024, pinned / nice -15 (no real change)    | 42–50        |
+| 1024, synthetic chords only                 | 0–2          |
+| 1024, live playing with TUI                 | 14–16 / 35 s |
+| 2048, live playing with TUI                 | 0            |
+
+Core pinning (`taskset`) and `renice` do not help: Android's foreground
+cpuset only exposes two of the fast cores anyway, and the lateness hits
+both clients at once, which points at the dummy driver's own timer
+waking late and compressing the next cycle. What helps is less work per
+cycle (the TUI redrew on every MPE message, ~30 % of a core; `--no-tui`
+and the 25 fps redraw cap fix that) and a longer period.
+
 ## 4. Smaller things
 
 - `src/hud/tui_url.rs`: clipboard via `termux-clipboard-set`, browser via
@@ -164,7 +190,10 @@ if the phone keeps up; `PULSE_SINK=OpenSL_ES_sink` selects the default sink.
   `$HOME/.local/share` as on Linux (the `directories` crate).
 - The HUD works at `http://localhost:9099/` in the phone browser.
 - Release builds matter: the debug `xentool serve` used ~32 % CPU on the
-  phone (TUI redraw), the release build ~4 %.
+  phone, the release build ~4 % idle. Under dense MPE traffic even the
+  release TUI redrew per message (~30 %); redraws are now capped at 25 fps
+  and the launcher runs `serve --no-tui` by default (`XENTOOL_TUI=1` to
+  get it back).
 - `cargo test` passes on Termux (89 tests incl. the USB-MIDI codec tests).
 
 ## 5. Not done / known limits

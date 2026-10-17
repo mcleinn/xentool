@@ -7,8 +7,9 @@
 #              (jack2's own opensles backend crackles at every period size;
 #              PulseAudio's default OpenSL sink is clean but adds ~250 ms)
 #   sc       — sclang running supercollider/mpe_tanpura_xentool.scd
-#   xentool  — `xentool serve <layout> --hud`, re-executed under termux-usb
-#              automatically (accept the USB permission dialog once per plug-in)
+#   xentool  — `xentool serve <layout> --hud --no-tui`, re-executed under
+#              termux-usb automatically (accept the USB permission dialog once
+#              per plug-in). XENTOOL_TUI=1 brings the terminal UI back.
 #
 # Prereqs (one-off):
 #   pkg install rust git clang pkg-config libusb termux-api supercollider jack2 pulseaudio tmux
@@ -21,6 +22,7 @@
 #        JACK_PERIOD (512)   PULSE_LATENCY_MS (20)
 #        PULSE_SINK  (xentool_aaudio; set to OpenSL_ES_sink to use the default
 #                     sink instead, at a much higher latency)
+#        XENTOOL_TUI (0; 1 = run the ratatui TUI, costs ~30 % of a core)
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,6 +34,8 @@ JACK_PERIOD="${JACK_PERIOD:-512}"
 JACK_WAIT_US=$(( JACK_PERIOD * 1000000 / JACK_RATE ))
 PULSE_LATENCY_MS="${PULSE_LATENCY_MS:-20}"
 PULSE_SINK="${PULSE_SINK:-xentool_aaudio}"
+XENTOOL_TUI="${XENTOOL_TUI:-0}"
+TUI_FLAG="--no-tui"; [ "$XENTOOL_TUI" = "1" ] && TUI_FLAG=""
 FIFO="$HOME/.cache/xentool/jack2pulse.fifo"
 BRIDGE="$PREFIX/bin/jack2pulse"
 
@@ -86,6 +90,6 @@ tmux new-window -t "$SESSION" -n sc \
 # Give scsynth a moment to boot before xentool starts streaming OSC.
 sleep 3
 tmux new-window -t "$SESSION" -n xentool \
-    "cd '$ROOT' && '$BIN' serve '$LAYOUT' --hud; echo; echo '[xentool exited — press Enter]'; read -r _"
+    "cd '$ROOT' && '$BIN' serve '$LAYOUT' --hud $TUI_FLAG; echo; echo '[xentool exited — press Enter]'; read -r _"
 tmux select-window -t "$SESSION:xentool"
 exec tmux attach -t "$SESSION"

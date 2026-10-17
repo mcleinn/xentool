@@ -46,11 +46,16 @@ static jack_port_t *in_port[2];
 static jack_ringbuffer_t *rb;
 static volatile sig_atomic_t running = 1;
 static volatile unsigned long overflows = 0;
+static volatile unsigned long clipped = 0;   /* samples at/over full scale */
+static volatile float peak = 0.0f;           /* running peak, reset by reporter */
 static int16_t scratch[MAX_FRAMES * 2];
 
 static void on_signal(int sig) { (void)sig; running = 0; }
 
 static inline int16_t to_s16(float v) {
+    float a = v < 0 ? -v : v;
+    if (a > peak) peak = a;
+    if (a >= 0.999f) clipped++;
     if (v > 1.0f) v = 1.0f;
     if (v < -1.0f) v = -1.0f;
     return (int16_t)(v * 32767.0f);
@@ -141,6 +146,8 @@ int main(int argc, char **argv) {
     long trim = 0;                        /* +1 drop a frame, -1 duplicate, 0 none */
     unsigned long frames_since_trim = 0;
     unsigned long dropped = 0, padded = 0;
+    unsigned long last_clip = 0;
+    unsigned report_tick = 0;
 
     while (running) {
         if ((tick++ % 100) == 0) try_connect(prefix);
@@ -174,6 +181,16 @@ int main(int argc, char **argv) {
             if (write_all(out, n) < 0) break;
         }
 
+        /* Once a second: report peak / clipping so "amp-like distortion"
+           can be told apart from scheduling glitches. */
+        if (++report_tick >= (unsigned)(4 * rate / period)) {
+            report_tick = 0;
+            if (clipped != last_clip || peak > 0.95f)
+                fprintf(stderr, "jack2pulse: peak=%.2f clipped=%lu samples (+%lu)\n",
+                        peak, clipped, clipped - last_clip);
+            last_clip = clipped;
+            peak = 0.0f;
+        }
         if (overflows != last_over) {
             fprintf(stderr, "jack2pulse: ring buffer overflow (%lu total) — sink stalled\n", overflows);
             last_over = overflows;
