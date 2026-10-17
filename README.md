@@ -227,12 +227,19 @@ the Android build differs in two ways:
   OpenSL ES backend crackles at every period size.
 
 ```bash
-pkg install rust git clang pkg-config libusb termux-api supercollider jack2 pulseaudio tmux
-# plus the Termux:API companion app from F-Droid / Play
+# plus the Termux:API companion app from the same source as Termux
+pkg install git
 git clone https://github.com/mcleinn/xentool.git ~/dev/xentool
-cd ~/dev/xentool && cargo build --release
-scripts/run-termux-exquis.sh xtn/edo31.xtn   # jackd + bridge + sclang + xentool serve in tmux
+cd ~/dev/xentool
+bash scripts/install-termux-exquis.sh         # packages, cargo build --release, audio bridge
+scripts/run-termux-exquis.sh                  # xtn/edo53.xtn; jackd + bridge + sclang + xentool serve in tmux
+scripts/run-termux-exquis.sh xtn/edo31.xtn    # another layout
 ```
+
+| Script | Role |
+|--------|------|
+| `scripts/install-termux-exquis.sh` | one-off install, counterpart of `install-linux-exquis.sh` (no services, no autostart) |
+| `scripts/run-termux-exquis.sh` | counterpart of `run-all-exquis.bat`: tmux session with jackd, audio bridge, sclang, `xentool serve --hud --no-tui` |
 
 Full write-up of every Android-specific change: [docs/android_termux.md](docs/android_termux.md).
 

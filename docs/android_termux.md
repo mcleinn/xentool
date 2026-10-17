@@ -9,11 +9,22 @@ This document lists everything that differs from the Linux (Pi) and
 Windows setups, why, and how to run it. The short version:
 
 ```bash
-pkg install rust git clang pkg-config libusb termux-api supercollider jack2 pulseaudio tmux
+pkg install git
 git clone https://github.com/mcleinn/xentool.git ~/dev/xentool
-cd ~/dev/xentool && cargo build --release
-scripts/run-termux-exquis.sh xtn/edo31.xtn
+cd ~/dev/xentool
+bash scripts/install-termux-exquis.sh    # pkg install …, cargo build --release, jack2pulse
+scripts/run-termux-exquis.sh             # xtn/edo53.xtn by default, like the other launchers
 ```
+
+Scripts (counterparts of the Linux/Windows ones; no services or autostart):
+
+- `scripts/install-termux-exquis.sh` — packages (git rust clang pkg-config
+  libusb termux-api supercollider jack2 pulseaudio tmux), checks that
+  `termux-usb` reaches the Termux:API app, builds xentool and the audio
+  bridge, links `~/.local/bin/xentool` and `~/.local/bin/xentool-exquis`.
+- `scripts/run-termux-exquis.sh [layout] [serve args]` — the tmux session.
+  `LAYOUT=` env like `run-all-exquis.bat`; `XENTOOL_TUI=1`, `JACK_PERIOD`,
+  `PULSE_LATENCY_MS`, `PULSE_SINK` tune it.
 
 The launcher opens a tmux session with four windows (jackd, audio bridge,
 sclang, xentool). Accept the Android USB permission dialog the first time

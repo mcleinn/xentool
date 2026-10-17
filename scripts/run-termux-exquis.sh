@@ -17,8 +17,12 @@
 #   The Termux:API companion app must be installed (termux-usb needs it).
 #   jack2pulse is built from scripts/termux/jack2pulse.c on first run.
 #
-# Usage: scripts/run-termux-exquis.sh [layout.xtn]   (default xtn/edo31.xtn)
-# Env:   JACK_RATE (48000 = AAudio sink rate, avoids resampling)
+# Usage: scripts/run-termux-exquis.sh [layout.xtn] [extra xentool serve args]
+#        Default layout: xtn/edo53.xtn (same as serve-exquis.sh and the
+#        Windows run-all-exquis.bat); LAYOUT=... overrides it like on Windows.
+#        Install first with scripts/install-termux-exquis.sh.
+# Env:   LAYOUT      (layout file; overridden by the positional argument)
+#        JACK_RATE (48000 = AAudio sink rate, avoids resampling)
 #        JACK_PERIOD (2048; 1024 glitches ~1/s live, 2048 was clean)
 #        PULSE_LATENCY_MS (20)
 #        PULSE_SINK  (xentool_aaudio; set to OpenSL_ES_sink to use the default
@@ -27,7 +31,9 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LAYOUT="${1:-xtn/edo31.xtn}"
+if [ $# -gt 0 ]; then LAYOUT="$1"; shift; fi
+EXTRA_ARGS="$*"
+LAYOUT="${LAYOUT:-xtn/edo53.xtn}"
 SESSION="xentool"
 JACK_RATE="${JACK_RATE:-48000}"
 JACK_PERIOD="${JACK_PERIOD:-2048}"
@@ -91,7 +97,7 @@ tmux new-window -t "$SESSION" -n sc \
 # Give scsynth a moment to boot before xentool starts streaming OSC.
 sleep 3
 tmux new-window -t "$SESSION" -n xentool \
-    "cd '$ROOT' && '$BIN' serve '$LAYOUT' --hud $TUI_FLAG; echo; echo '[xentool exited — press Enter]'; read -r _"
+    "cd '$ROOT' && '$BIN' serve '$LAYOUT' --hud $TUI_FLAG $EXTRA_ARGS; echo; echo '[xentool exited — press Enter]'; read -r _"
 # Best-effort scheduling help for the audio chain: fast cores (Android's
 # foreground cpuset decides which of 4-7 we actually get) and a negative
 # nice on every thread. No realtime scheduling is available on Android.
