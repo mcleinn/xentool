@@ -115,7 +115,7 @@ Solution in the launcher:
 
 ```
 pactl load-module module-aaudio-sink sink_name=xentool_aaudio rate=48000
-jackd -d dummy -r 48000 -p 512 -w 10666          # software clock for scsynth
+jackd -d dummy -r 48000 -p 2048 -w 42666         # software clock for scsynth
 pacat --raw --format=s16le --rate=48000 --channels=2 --latency-msec=20       --device=xentool_aaudio <fifo> &
 jack2pulse > <fifo>                              # scripts/termux/jack2pulse.c
 ```
@@ -152,9 +152,10 @@ Two Termux quirks baked into the script:
   priority`); the 100 ms PulseAudio latency plus the ring buffer absorb
   the jitter.
 
-Expected latency: ~11 ms period + ~11 ms pipe + 20 ms Pulse target + 8 ms
-AAudio. Raise `PULSE_LATENCY_MS` / `JACK_PERIOD` if it crackles, lower them
-if the phone keeps up; `PULSE_SINK=OpenSL_ES_sink` selects the default sink.
+Expected latency with the 2048-frame default: ~43 ms period + ~11 ms pipe
++ 20 ms Pulse target + 8 ms AAudio ≈ 80 ms. `JACK_PERIOD=1024` halves the
+first term but glitched about once a second in live playing on the Pixel 7;
+`PULSE_SINK=OpenSL_ES_sink` selects the default (slow) sink.
 
 ### Measuring glitches instead of listening
 
@@ -173,7 +174,8 @@ prints peak/clip counts so real clipping can be ruled out):
 | 1024, pinned / nice -15 (no real change)    | 42–50        |
 | 1024, synthetic chords only                 | 0–2          |
 | 1024, live playing with TUI                 | 14–16 / 35 s |
-| 2048, live playing with TUI                 | 0            |
+| 1024, live playing headless (`--no-tui`)    | 36–77 / 35 s |
+| 2048, live playing with TUI                 | 0 / 35 s     |
 
 Core pinning (`taskset`) and `renice` do not help: Android's foreground
 cpuset only exposes two of the fast cores anyway, and the lateness hits

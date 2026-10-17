@@ -19,7 +19,8 @@
 #
 # Usage: scripts/run-termux-exquis.sh [layout.xtn]   (default xtn/edo31.xtn)
 # Env:   JACK_RATE (48000 = AAudio sink rate, avoids resampling)
-#        JACK_PERIOD (512)   PULSE_LATENCY_MS (20)
+#        JACK_PERIOD (2048; 1024 glitches ~1/s live, 2048 was clean)
+#        PULSE_LATENCY_MS (20)
 #        PULSE_SINK  (xentool_aaudio; set to OpenSL_ES_sink to use the default
 #                     sink instead, at a much higher latency)
 #        XENTOOL_TUI (0; 1 = run the ratatui TUI, costs ~30 % of a core)
@@ -29,7 +30,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LAYOUT="${1:-xtn/edo31.xtn}"
 SESSION="xentool"
 JACK_RATE="${JACK_RATE:-48000}"
-JACK_PERIOD="${JACK_PERIOD:-512}"
+JACK_PERIOD="${JACK_PERIOD:-2048}"
 # The dummy backend's -w is its cycle time; keep it exactly one period.
 JACK_WAIT_US=$(( JACK_PERIOD * 1000000 / JACK_RATE ))
 PULSE_LATENCY_MS="${PULSE_LATENCY_MS:-20}"
@@ -91,5 +92,13 @@ tmux new-window -t "$SESSION" -n sc \
 sleep 3
 tmux new-window -t "$SESSION" -n xentool \
     "cd '$ROOT' && '$BIN' serve '$LAYOUT' --hud $TUI_FLAG; echo; echo '[xentool exited — press Enter]'; read -r _"
+# Best-effort scheduling help for the audio chain: fast cores (Android's
+# foreground cpuset decides which of 4-7 we actually get) and a negative
+# nice on every thread. No realtime scheduling is available on Android.
+sleep 2
+for pid in $(pgrep -x scsynth) $(pgrep -x jackd) $(pgrep -x pacat) $(pgrep -f "bin/jack2pulse"); do
+    taskset -a -pc 4-7 "$pid" >/dev/null 2>&1 || true
+    for t in /proc/"$pid"/task/*; do renice -n -15 -p "${t##*/}" >/dev/null 2>&1 || true; done
+done
 tmux select-window -t "$SESSION:xentool"
 exec tmux attach -t "$SESSION"
