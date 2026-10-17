@@ -74,10 +74,7 @@ ln -sf "$ROOT/scripts/run-termux-exquis.sh" "$HOME/.local/bin/xentool-exquis"
 # SuperCollider and then serves the tuning (default xtn/edo53.xtn).
 ln -sf "$ROOT/scripts/run-termux-exquis.sh" "$HOME/xentool-exquis"
 if ! grep -qs 'HOME/.local/bin' "$HOME/.bashrc"; then
-    printf '
-# xentool (install-termux-exquis.sh)
-export PATH="$HOME/.local/bin:$PATH"
-' >> "$HOME/.bashrc"
+    printf '\n# xentool (install-termux-exquis.sh)\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.bashrc"
     ok "  added ~/.local/bin to PATH in ~/.bashrc (takes effect in new sessions)"
 fi
 ok "  ~/xentool-exquis, ~/.local/bin/xentool-exquis (launcher) and ~/.local/bin/xentool"
