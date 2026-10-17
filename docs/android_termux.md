@@ -21,7 +21,8 @@ Scripts (counterparts of the Linux/Windows ones; no services or autostart):
 - `scripts/install-termux-exquis.sh` — packages (git rust clang pkg-config
   libusb termux-api supercollider jack2 pulseaudio tmux), checks that
   `termux-usb` reaches the Termux:API app, builds xentool and the audio
-  bridge, links `~/.local/bin/xentool` and `~/.local/bin/xentool-exquis`.
+  bridge, links `~/xentool-exquis` (the launcher, right in the Termux
+  home), `~/.local/bin/xentool-exquis` and `~/.local/bin/xentool`.
 - `scripts/run-termux-exquis.sh [layout] [serve args]` — the tmux session.
   `LAYOUT=` env like `run-all-exquis.bat`; `XENTOOL_TUI=1`, `JACK_PERIOD`,
   `PULSE_LATENCY_MS`, `PULSE_SINK` tune it.

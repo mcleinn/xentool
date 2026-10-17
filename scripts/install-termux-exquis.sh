@@ -70,11 +70,14 @@ ok "  $PREFIX/bin/jack2pulse"
 mkdir -p "$HOME/.cache/xentool" "$HOME/.local/bin"
 ln -sf "$ROOT/target/release/xentool" "$HOME/.local/bin/xentool"
 ln -sf "$ROOT/scripts/run-termux-exquis.sh" "$HOME/.local/bin/xentool-exquis"
+# Also a symlink right in the Termux home: `~/xentool-exquis` starts
+# SuperCollider and then serves the tuning (default xtn/edo53.xtn).
+ln -sf "$ROOT/scripts/run-termux-exquis.sh" "$HOME/xentool-exquis"
 case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
     *) warn "  add 'export PATH=\$HOME/.local/bin:\$PATH' to ~/.bashrc to use 'xentool' and 'xentool-exquis' directly" ;;
 esac
-ok "  ~/.local/bin/xentool and ~/.local/bin/xentool-exquis (launcher)"
+ok "  ~/xentool-exquis, ~/.local/bin/xentool-exquis (launcher) and ~/.local/bin/xentool"
 
 step "Smoke test"
 "$ROOT/target/release/xentool" help >/dev/null && ok "  xentool help"
@@ -84,8 +87,8 @@ cat <<EOF
 
 Done. Plug the Exquis into USB-C, then:
 
-    $ROOT/scripts/run-termux-exquis.sh              # xtn/edo53.xtn
-    $ROOT/scripts/run-termux-exquis.sh xtn/edo31.xtn
+    ~/xentool-exquis                 # xtn/edo53.xtn
+    ~/xentool-exquis xtn/edo31.xtn
 
 Accept the Android USB permission dialog on first use after each plug-in.
 The launcher opens a tmux session (jackd, audio bridge, sclang, xentool);
