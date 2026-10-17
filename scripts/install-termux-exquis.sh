@@ -73,10 +73,13 @@ ln -sf "$ROOT/scripts/run-termux-exquis.sh" "$HOME/.local/bin/xentool-exquis"
 # Also a symlink right in the Termux home: `~/xentool-exquis` starts
 # SuperCollider and then serves the tuning (default xtn/edo53.xtn).
 ln -sf "$ROOT/scripts/run-termux-exquis.sh" "$HOME/xentool-exquis"
-case ":$PATH:" in
-    *":$HOME/.local/bin:"*) ;;
-    *) warn "  add 'export PATH=\$HOME/.local/bin:\$PATH' to ~/.bashrc to use 'xentool' and 'xentool-exquis' directly" ;;
-esac
+if ! grep -qs 'HOME/.local/bin' "$HOME/.bashrc"; then
+    printf '
+# xentool (install-termux-exquis.sh)
+export PATH="$HOME/.local/bin:$PATH"
+' >> "$HOME/.bashrc"
+    ok "  added ~/.local/bin to PATH in ~/.bashrc (takes effect in new sessions)"
+fi
 ok "  ~/xentool-exquis, ~/.local/bin/xentool-exquis (launcher) and ~/.local/bin/xentool"
 
 step "Smoke test"
