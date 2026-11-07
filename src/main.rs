@@ -137,7 +137,7 @@ fn main() -> Result<()> {
                 #[cfg(target_os = "android")]
                 bail!("the openxen backend is not available on Android");
                 #[cfg(not(target_os = "android"))]
-                openxen::commands::cmd_load_ltn(file)
+                openxen::commands::cmd_load_ltn(file, &settings::load().openxen)
             } else if is_wtn(&file) {
                 wooting::commands::cmd_load_wtn(file)
             } else {

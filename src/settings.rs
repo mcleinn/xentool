@@ -70,7 +70,42 @@ pub struct OpenxenSettings {
     /// serial order.
     #[serde(default)]
     pub boards: Vec<OpenxenBoardSettings>,
+    #[serde(default)]
+    pub leds: OpenxenLedSettings,
 }
+
+/// openxen LEDs. The firmware caps the LED current at `power_budget_ma` (max 600) through
+/// the driver's global current; a module draws ~390 mA for sensors + MCU on top. Keep it at
+/// or below 100 mA on a plain 500 mA USB port; the InLine hub supplies 2 A per port.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenxenLedSettings {
+    #[serde(default = "ox_led_brightness")]
+    pub brightness: u8,
+    #[serde(default = "ox_led_budget")]
+    pub power_budget_ma: u16,
+    /// Press highlight colour (hex RRGGBB) shown by the module itself, or "off".
+    #[serde(default = "ox_led_highlight")]
+    pub highlight: String,
+    /// LEDs go off when xentool stops for this long (ms); 0 = never.
+    #[serde(default = "ox_led_timeout")]
+    pub timeout_ms: u16,
+}
+
+impl Default for OpenxenLedSettings {
+    fn default() -> Self {
+        Self {
+            brightness: ox_led_brightness(),
+            power_budget_ma: ox_led_budget(),
+            highlight: ox_led_highlight(),
+            timeout_ms: ox_led_timeout(),
+        }
+    }
+}
+
+fn ox_led_brightness() -> u8 { 255 }
+fn ox_led_budget() -> u16 { 300 }
+fn ox_led_highlight() -> String { "FFFFFF".into() }
+fn ox_led_timeout() -> u16 { 2000 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenxenBoardSettings {
@@ -92,6 +127,7 @@ impl Default for OpenxenSettings {
             aftertouch_delta: default_aftertouch_delta(),
             aftertouch_speed_max: default_aftertouch_speed_max(),
             boards: Vec::new(),
+            leds: OpenxenLedSettings::default(),
         }
     }
 }

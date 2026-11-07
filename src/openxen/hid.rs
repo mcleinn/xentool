@@ -73,15 +73,17 @@ struct Reader {
 pub struct Manager {
     api: hidapi::HidApi,
     tx: Sender<Event>,
+    /// LED worker: receives a second (write) handle per module.
+    led_tx: Option<Sender<super::led::LedMsg>>,
     readers: HashMap<String, Reader>,
     /// Frames dropped because the hot loop's channel was full, per module.
     pub overflow: Arc<AtomicU64>,
 }
 
 impl Manager {
-    pub fn new(tx: Sender<Event>) -> Result<Self> {
+    pub fn new(tx: Sender<Event>, led_tx: Option<Sender<super::led::LedMsg>>) -> Result<Self> {
         let api = hidapi::HidApi::new().context("initialising hidapi")?;
-        Ok(Self { api, tx, readers: HashMap::new(), overflow: Arc::new(AtomicU64::new(0)) })
+        Ok(Self { api, tx, led_tx, readers: HashMap::new(), overflow: Arc::new(AtomicU64::new(0)) })
     }
 
     /// Start readers for newly attached modules and forget finished ones.
@@ -98,6 +100,12 @@ impl Manager {
                     continue;
                 }
             };
+            if let Some(led_tx) = &self.led_tx {
+                // HID devices may be opened twice; the writer handle goes to the LED worker
+                if let Ok(writer) = self.api.open_path(&m.path) {
+                    let _ = led_tx.send(super::led::LedMsg::Attach { serial: m.serial.as_str().into(), dev: writer });
+                }
+            }
             let stop = Arc::new(AtomicBool::new(false));
             let alive = Arc::new(AtomicBool::new(true));
             let serial: Arc<str> = m.serial.as_str().into();

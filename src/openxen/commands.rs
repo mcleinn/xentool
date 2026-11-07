@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 
-use crate::openxen::{hid, serve};
+use crate::openxen::{hid, led, serve};
 use crate::settings::OpenxenSettings;
 use crate::wooting::wtn::{new_blank, write_wtn};
 
@@ -29,9 +29,34 @@ pub fn cmd_new_ltn(file: PathBuf, edo: i32, boards: u8, pitch_offset: i32, force
     Ok(())
 }
 
-/// `xentool load FILE.ltn` — openxen LEDs are not supported by the firmware yet.
-pub fn cmd_load_ltn(file: PathBuf) -> Result<()> {
-    bail!("{}: openxen LED colours are not supported yet (module firmware pending)", file.display())
+/// `xentool load FILE.ltn` — paint each attached module with its board's layout colours and
+/// exit. The host timeout is disabled (0) so the colours stay until the module is reset; a
+/// later `serve` takes over again.
+pub fn cmd_load_ltn(file: PathBuf, settings: &OpenxenSettings) -> Result<()> {
+    let text = std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
+    let wtn = crate::wooting::wtn::parse_wtn(&text)?;
+    let mut api = hidapi::HidApi::new().context("initialising hidapi")?;
+    let modules = hid::list_modules(&mut api)?;
+    if modules.is_empty() {
+        bail!("no openxen modules attached");
+    }
+    let cfg = led::LedConfig { timeout_ms: 0, ..serve::led_config(settings) };
+    let mut taken = std::collections::BTreeMap::new();
+    for m in &modules {
+        let Some(board) = serve::assign_board(&m.serial, settings, &taken) else {
+            println!("{}: no free board, skipped", m.serial);
+            continue;
+        };
+        taken.insert(board, std::sync::Arc::<str>::from(m.serial.as_str()));
+        let dev = api.open_path(&m.path).with_context(|| format!("opening {}", m.serial))?;
+        let mut reports = vec![led::config_report(&cfg)];
+        reports.extend(led::frame_reports(&serve::board_frame(&wtn, board)));
+        for r in &reports {
+            dev.write(&led::with_report_id(r)).with_context(|| format!("writing to {}", m.serial))?;
+        }
+        println!("{} -> board{board}: layout colours loaded", m.serial);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

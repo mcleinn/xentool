@@ -20,6 +20,10 @@ pub const CAL_PER_REPORT: usize = 4;
 pub const FLAG_INVERTED: u8 = 0x01;
 #[allow(dead_code)] // reported by the firmware; not used by the key logic yet
 pub const FLAG_CALIBRATING: u8 = 0x02;
+#[allow(dead_code)] // reported by the firmware; serve logs only the error bits
+pub const LED_STATUS_HOST: u8 = 0x01;
+pub const LED_STATUS_TIMEOUT: u8 = 0x02;
+pub const LED_STATUS_I2C_ERROR: u8 = 0x04;
 
 /// All fields of a report; the serve path uses values/sequence/time/calibration, the rest
 /// is kept for diagnostics and tests.
@@ -33,6 +37,8 @@ pub struct Report {
     pub num_keys: u8,
     pub cal_first_key: u8,
     pub adc_bits: u8,
+    /// LED driver state (openxen `docs/led-protocol.md`): see `LED_STATUS_*`.
+    pub led_status: u8,
     pub values: [u16; MAX_KEYS],
     pub cal: [(u16, u16); CAL_PER_REPORT],
 }
@@ -71,6 +77,7 @@ pub fn parse(raw: &[u8]) -> Result<Report> {
         num_keys,
         cal_first_key: b[13],
         adc_bits: b[14],
+        led_status: b[15],
         values,
         cal,
     })
@@ -90,6 +97,7 @@ pub struct Frame {
     /// Key travel 0..1 (rest..bottom-out); NaN while the key's calibration is unknown.
     pub travel: [f32; MAX_KEYS],
     pub flags: u8,
+    pub led_status: u8,
 }
 
 /// Per-module decoder: unwraps sequence/time, counts losses, keeps the rotating
@@ -156,7 +164,7 @@ impl Decoder {
                 travel[k] = t.clamp(0.0, 1.0);
             }
         }
-        Ok(Frame { sequence: seq, time_us: time, lost_before: lost, num_keys: r.num_keys, travel, flags: r.flags })
+        Ok(Frame { sequence: seq, time_us: time, lost_before: lost, num_keys: r.num_keys, travel, flags: r.flags, led_status: r.led_status })
     }
 }
 

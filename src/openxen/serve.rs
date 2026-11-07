@@ -5,7 +5,9 @@
 //! printing inside (TUI log lines go through a bounded channel on state transitions only).
 //! Differences: frames arrive from reader threads (`hid.rs`) at ~4 kHz per module and are
 //! processed in order with the module's own timestamps; keys are addressed by board and
-//! Lumatone key index (no HID keycodes, no control bar). LEDs are not driven yet.
+//! Lumatone key index (no HID keycodes, no control bar). LEDs: the layout colours of each
+//! board are sent to its module on connect (LED worker in `led.rs`); the module itself shows
+//! the press highlight and turns its LEDs off when xentool stops (host timeout).
 
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, Receiver};
@@ -19,6 +21,7 @@ use std::time::{Duration, Instant};
 use crate::mts::MtsMaster;
 use crate::openxen::hid::{Event, Manager};
 use crate::openxen::keys::{Action, KeyMachine, KeyParams, VelocitySource};
+use crate::openxen::led::{self, LedConfig, LedMsg};
 use crate::openxen::proto::MAX_KEYS;
 use crate::settings::OpenxenSettings;
 use crate::wooting::modes::{AftertouchMode, VelocityProfile, default_velocity_profiles};
@@ -80,6 +83,38 @@ pub fn key_params(s: &OpenxenSettings) -> KeyParams {
     }
 }
 
+// --- LEDs ---
+
+/// LED configuration from settings (highlight "off" or hex RRGGBB).
+pub fn led_config(s: &OpenxenSettings) -> LedConfig {
+    let h = s.leds.highlight.trim().trim_start_matches('#');
+    let highlight = if h.eq_ignore_ascii_case("off") || h.len() != 6 {
+        None
+    } else {
+        match (u8::from_str_radix(&h[0..2], 16), u8::from_str_radix(&h[2..4], 16), u8::from_str_radix(&h[4..6], 16)) {
+            (Ok(r), Ok(g), Ok(b)) => Some((r, g, b)),
+            _ => None,
+        }
+    };
+    LedConfig {
+        brightness: s.leds.brightness,
+        highlight,
+        timeout_ms: s.leds.timeout_ms,
+        budget_ma: s.leds.power_budget_ma.min(led::BUDGET_MAX_MA),
+    }
+}
+
+/// The layout colours of one board (keys without a channel stay dark, as on Wooting).
+pub fn board_frame(wtn: &Wtn, board: u8) -> led::Frame {
+    let mut f = [(0u8, 0u8, 0u8); led::KEYS];
+    for (k, px) in f.iter_mut().enumerate() {
+        if let Some(c) = wtn.cell(board, k).filter(|c| c.chan != 0) {
+            *px = c.color;
+        }
+    }
+    f
+}
+
 // --- board assignment (serial -> .ltn board) ---
 
 /// Configured serials keep their board; others take the lowest free board in order of
@@ -103,6 +138,7 @@ struct Module {
     frames: u64,
     lost: u64,
     last_time_us: u64,
+    led_status: u8,
 }
 
 impl Module {
@@ -114,6 +150,7 @@ impl Module {
             frames: 0,
             lost: 0,
             last_time_us: 0,
+            led_status: 0,
         }
     }
 
@@ -204,8 +241,11 @@ pub fn cmd_serve_ltn(
     publish_tuning(&master, edo, wtn.pitch_offset)?;
     let mut midi = MidiOut::open(&midi_port)?;
 
+    let (led_tx, led_rx) = crossbeam_channel::unbounded::<LedMsg>();
+    let _led_worker = led::spawn_worker(led_rx);
+    let _ = led_tx.send(LedMsg::Config(led_config(settings)));
     let (ev_tx, ev_rx) = bounded::<Event>(CHANNEL_CAPACITY);
-    let mut manager = Manager::new(ev_tx)?;
+    let mut manager = Manager::new(ev_tx, Some(led_tx.clone()))?;
     manager.refresh()?;
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -267,7 +307,7 @@ pub fn cmd_serve_ltn(
             last_hotplug = Instant::now();
         }
 
-        drain(&ev_rx, &mut modules, &mut boards, settings, &params, &profile, &wtn, &mut midi, &log_tx);
+        drain(&ev_rx, &mut modules, &mut boards, settings, &params, &profile, &wtn, &mut midi, &log_tx, &led_tx);
 
         if last_stats.elapsed() >= STATS_INTERVAL {
             let overflow = manager.overflow.load(Ordering::Relaxed);
@@ -333,6 +373,7 @@ fn drain(
     wtn: &Wtn,
     midi: &mut MidiOut,
     log_tx: &crossbeam_channel::Sender<String>,
+    led_tx: &crossbeam_channel::Sender<LedMsg>,
 ) {
     while let Ok(ev) = rx.try_recv() {
         match ev {
@@ -344,6 +385,7 @@ fn drain(
                     Some(b) => {
                         boards.insert(b, serial.clone());
                         modules.insert(serial.clone(), Module::new(b));
+                        let _ = led_tx.send(LedMsg::Frame { serial: serial.clone(), frame: Box::new(board_frame(wtn, b)) });
                         let _ = log_tx.try_send(format!("openxen: module {serial} -> board{b}"));
                     }
                     None => {
@@ -352,6 +394,7 @@ fn drain(
                 }
             }
             Event::Disconnected { serial, reason } => {
+                let _ = led_tx.send(LedMsg::Detach { serial: serial.clone() });
                 if let Some(mut m) = modules.remove(&serial) {
                     m.release_all(midi);
                     boards.remove(&m.board);
@@ -366,6 +409,17 @@ fn drain(
                 m.frames += 1;
                 m.lost += frame.lost_before;
                 m.last_time_us = frame.time_us;
+                if frame.led_status != m.led_status {
+                    use crate::openxen::proto::{LED_STATUS_I2C_ERROR, LED_STATUS_TIMEOUT};
+                    let new_bits = frame.led_status & !m.led_status;
+                    if new_bits & LED_STATUS_I2C_ERROR != 0 {
+                        let _ = log_tx.try_send(format!("openxen board{}: LED driver I2C error (module re-initialises it)", m.board));
+                    }
+                    if new_bits & LED_STATUS_TIMEOUT != 0 {
+                        let _ = log_tx.try_send(format!("openxen board{}: LEDs timed out (no LED commands reached the module)", m.board));
+                    }
+                    m.led_status = frame.led_status;
+                }
                 for k in 0..(frame.num_keys as usize).min(MAX_KEYS) {
                     if let Some(a) = m.keys[k].step(frame.time_us, frame.travel[k], params, profile) {
                         apply(a, m, k, wtn, midi);
@@ -431,6 +485,31 @@ mod tests {
         assert_eq!(assign_board("C", &s, &taken), Some(3));   // reserved board used when nothing else is free
         taken.insert(3, Arc::<str>::from("x"));
         assert_eq!(assign_board("D", &s, &taken), None);
+    }
+
+    #[test]
+    fn led_config_from_settings() {
+        let mut s = OpenxenSettings::default();
+        let c = led_config(&s);
+        assert_eq!(c.highlight, Some((255, 255, 255)));
+        assert_eq!((c.timeout_ms, c.budget_ma), (2000, 300));
+        s.leds.highlight = "off".into();
+        s.leds.power_budget_ma = 9000;
+        let c = led_config(&s);
+        assert_eq!(c.highlight, None);
+        assert_eq!(c.budget_ma, led::BUDGET_MAX_MA);
+        s.leds.highlight = "#00ff7f".into();
+        assert_eq!(led_config(&s).highlight, Some((0, 255, 127)));
+    }
+
+    #[test]
+    fn board_frame_uses_layout_colours() {
+        let text = "Edo=31\n[Board1]\nKey_0=1\nChan_0=2\nCol_0=FF8000\nKey_1=2\nChan_1=0\nCol_1=00FF00\n";
+        let wtn = parse_wtn(text).unwrap();
+        let f = board_frame(&wtn, 1);
+        assert_eq!(f[0], (255, 128, 0));
+        assert_eq!(f[1], (0, 0, 0)); // no channel -> dark
+        assert_eq!(board_frame(&wtn, 0), [(0, 0, 0); led::KEYS]);
     }
 
     #[test]

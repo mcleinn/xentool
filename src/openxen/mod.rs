@@ -13,14 +13,16 @@
 //!   timestamps; pure (returns MIDI actions), unit-tested
 //! - `serve.rs`   — the 1 kHz hot loop: drains frames, runs the key machines, emits MIDI,
 //!   publishes MTS-ESP, HUD and TUI snapshots (TUI and HUD helpers shared with Wooting)
-//! - `commands.rs` — CLI handlers (`serve` for `.ltn`, module listing)
+//! - `led.rs`     — LED commands (frames, config, keepalive) and the LED worker thread
+//!   (like the Wooting RGB worker: batched, at most one frame per 16 ms per module)
+//! - `commands.rs` — CLI handlers (`serve`/`new`/`load` for `.ltn`, module listing)
 //!
 //! Layouts are Lumatone-style `.ltn` files (`[Board0..4]`, `Key_n`/`Chan_n`/`Col_n` for
 //! n = 0..55, plus xentool's `Edo=` / `PitchOffset=` header), parsed with the `.wtn` parser.
-//! LEDs are not driven yet (firmware support pending).
 
 pub mod commands;
 pub mod hid;
 pub mod keys;
+pub mod led;
 pub mod proto;
 pub mod serve;
