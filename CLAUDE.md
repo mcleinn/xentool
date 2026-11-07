@@ -14,7 +14,7 @@ cargo run -- help  # run the CLI
 This is a Rust CLI (`src/main.rs`, binary `xentool`) for the Intuitive Instruments Exquis MPE controller and for Wooting analog keyboards (xenwooting use case).
 
 Top-level (cross-device or pure tooling):
-- `src/main.rs` — thin dispatcher: parses CLI, routes `.wtn` → Wooting backend, `.xtn` → Exquis backend, holds the multi-device `cmd_list`/`cmd_geometries`/`cmd_geometry`.
+- `src/main.rs` — thin dispatcher: parses CLI, routes `.wtn` → Wooting backend, `.ltn` → openxen backend, `.xtn` → Exquis backend, holds the multi-device `cmd_list`/`cmd_geometries`/`cmd_geometry`.
 - `src/cli.rs` — clap command definitions.
 - `src/config.rs` — device config (devices.json) for multi-Exquis logical board names + board sync.
 - `src/edit.rs` — web-based visual editor (rouille HTTP server, embedded HTML/JS via include_str!), edits .xtn / .wtn / .ltn.
@@ -44,6 +44,14 @@ Wooting backend (`src/wooting/`):
 - `analog.rs`, `rgb.rs` — Wooting Analog and RGB SDK wrappers (libloading at runtime).
 - `wtn.rs` — `.wtn` layout file parser.
 - `hidmap.rs`, `geometry.rs`, `control_bar.rs`, `modes.rs` — HID-to-musical-key mapping, board geometry, control-bar key handling, velocity/aftertouch mode enums.
+
+openxen backend (`src/openxen/`, experimental; not built on Android) — dispatched for `.ltn` files:
+- `proto.rs` — openxen analog stream v1 (one 144-byte HID report per module scan, ~4 kHz: device µs timestamp, sequence, 56 raw values, rotating calibration). `Decoder` unwraps sequence/time, counts lost scans, converts to travel 0..1. Tests decode reports produced by the openxen firmware's own packing code (`testdata/*.hex`).
+- `hid.rs` — hidapi discovery (usage page `0xFFAC`) and one reader thread per module; frames go to the hot loop over a bounded crossbeam channel (dropped + counted when full).
+- `keys.rs` — per-key Idle → Tracking → Held machine like the Wooting one, but on device timestamps: velocity from peak key speed (default) or peak depth, rapid re-strike, aftertouch modes. Pure (returns actions), unit-tested with synthetic strikes.
+- `serve.rs` — 1 kHz hot loop: drains frames in order, maps actions to MIDI via the `.ltn` cell resolved at note-on, MTS-ESP via `wooting::serve::publish_tuning`, TUI/HUD via the Wooting ui/hud_ctx helpers. Board assignment: `settings.openxen.boards` (serial → board), else lowest free board. No LEDs yet.
+- `commands.rs` — `serve`/`new`/`load` for `.ltn`, module listing for `xentool list`.
+- Settings: `openxen` section in settings.json (thresholds in travel units, velocity window/source/speed max, aftertouch); `last_ltn` remembers the layout. `.ltn` = Lumatone layout (`[Board0..4]`, `Key_n/Chan_n/Col_n`, n = 0..55) plus xentool's `Edo=`/`PitchOffset=` header, parsed by the `.wtn` parser.
 
 Live HUD (`src/hud/`):
 - `state.rs` — unified `LiveState` wire shape (layout/mode/pressed/layout_pitches). Both backends submit it.

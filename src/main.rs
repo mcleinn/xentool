@@ -8,6 +8,8 @@ mod layouts;
 mod logging;
 mod midi_out;
 mod mts;
+#[cfg(not(target_os = "android"))]
+mod openxen;
 mod settings;
 mod wooting;
 mod xtn;
@@ -77,12 +79,26 @@ fn main() -> Result<()> {
                     (None, Some(x)) => {
                         layouts::resolve_layout_path(std::path::Path::new(x))
                     }
+                    (None, None) if s.last_ltn.is_some() => {
+                        layouts::resolve_layout_path(std::path::Path::new(s.last_ltn.as_deref().unwrap()))
+                    }
                     (None, None) => {
                         bail!("no FILE argument and no persisted layout; run e.g. `xentool serve edo31.wtn` once");
                     }
                 },
             };
-            if is_wtn(&file) {
+            if is_ltn(&file) {
+                #[cfg(target_os = "android")]
+                bail!("the openxen backend is not available on Android");
+                #[cfg(not(target_os = "android"))]
+                {
+                    if no_tui {
+                        eprintln!("xentool: --no-tui is not implemented for the openxen backend yet; running with the TUI");
+                    }
+                    let output = output.unwrap_or_else(|| cli::DEFAULT_OUTPUT_OPENXEN.to_string());
+                    openxen::commands::cmd_serve_ltn(file, output, hud, hud_port, xenharm_url, osc_port, tune_supercollider, &s.openxen)
+                }
+            } else if is_wtn(&file) {
                 if no_tui {
                     eprintln!("xentool: --no-tui is not implemented for the Wooting backend yet; running with the TUI");
                 }
@@ -104,7 +120,12 @@ fn main() -> Result<()> {
             force,
         } => {
             let file = layouts::resolve_layout_path(&file);
-            if is_wtn(&file) {
+            if is_ltn(&file) {
+                #[cfg(target_os = "android")]
+                bail!("the openxen backend is not available on Android");
+                #[cfg(not(target_os = "android"))]
+                openxen::commands::cmd_new_ltn(file, edo, boards, pitch_offset, force)
+            } else if is_wtn(&file) {
                 wooting::commands::cmd_new_wtn(file, edo, boards, pitch_offset, force)
             } else {
                 cmd_new(file, edo, boards, pitch_offset, force)
@@ -112,7 +133,12 @@ fn main() -> Result<()> {
         }
         Commands::Load { file, color } => {
             let file = layouts::resolve_layout_path(&file);
-            if is_wtn(&file) {
+            if is_ltn(&file) {
+                #[cfg(target_os = "android")]
+                bail!("the openxen backend is not available on Android");
+                #[cfg(not(target_os = "android"))]
+                openxen::commands::cmd_load_ltn(file)
+            } else if is_wtn(&file) {
                 wooting::commands::cmd_load_wtn(file)
             } else {
                 cmd_load(file, color.to_correction()?)
@@ -220,6 +246,13 @@ fn needs_exquis_device(args: &[String]) -> bool {
 
 /// Returns true if the file looks like a Wooting layout file (routes to the
 /// Wooting backend). All other cases fall back to the Exquis backend.
+fn is_ltn(p: &std::path::Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("ltn"))
+        .unwrap_or(false)
+}
+
 fn is_wtn(p: &std::path::Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
@@ -293,9 +326,18 @@ fn cmd_list() -> Result<()> {
     }
 
     // Append connected Wooting keyboards, numbered after the last Exquis.
-    for block in wooting::commands::list_wootings(exquis_count + 1) {
+    let wootings = wooting::commands::list_wootings(exquis_count + 1);
+    let woot_count = wootings.len();
+    for block in wootings {
         print!("{block}");
     }
+
+    // Append attached openxen modules.
+    #[cfg(not(target_os = "android"))]
+    for block in openxen::commands::list_modules(exquis_count + woot_count + 1) {
+        print!("{block}");
+    }
+    let _ = woot_count;
 
     Ok(())
 }

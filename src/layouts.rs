@@ -19,6 +19,8 @@ use anyhow::{Context, Result};
 pub enum LayoutKind {
     Wtn,
     Xtn,
+    /// Lumatone-style layout for openxen modules (`src/openxen/`).
+    Ltn,
 }
 
 impl LayoutKind {
@@ -27,6 +29,7 @@ impl LayoutKind {
         match ext.as_str() {
             "wtn" => Some(LayoutKind::Wtn),
             "xtn" => Some(LayoutKind::Xtn),
+            "ltn" => Some(LayoutKind::Ltn),
             _ => None,
         }
     }
@@ -35,6 +38,7 @@ impl LayoutKind {
         match self {
             LayoutKind::Wtn => "wtn",
             LayoutKind::Xtn => "xtn",
+            LayoutKind::Ltn => "ltn",
         }
     }
 
@@ -42,6 +46,7 @@ impl LayoutKind {
         match self {
             LayoutKind::Wtn => "wtn",
             LayoutKind::Xtn => "xtn",
+            LayoutKind::Ltn => "ltn",
         }
     }
 }

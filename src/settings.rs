@@ -21,13 +21,88 @@ pub struct Settings {
     pub exquis: ExquisSettings,
     #[serde(default)]
     pub wooting: WootingSettings,
+    #[serde(default)]
+    pub openxen: OpenxenSettings,
     /// Basename of the most recently active `.wtn` layout, persisted across runs.
     #[serde(default)]
     pub last_wtn: Option<String>,
     /// Basename of the most recently active `.xtn` layout, persisted across runs.
     #[serde(default)]
     pub last_xtn: Option<String>,
+    /// Basename of the most recently active `.ltn` layout (openxen), persisted across runs.
+    #[serde(default)]
+    pub last_ltn: Option<String>,
 }
+
+// --- openxen section (experimental; tune on hardware) ---
+
+/// Key processing for openxen modules. Travel values are 0..1 of the calibrated key travel;
+/// times are device time (the modules timestamp every scan).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenxenSettings {
+    #[serde(default = "ox_press_threshold")]
+    pub press_threshold: f32,
+    #[serde(default = "ox_release_delta")]
+    pub release_delta: f32,
+    /// Device time after the threshold crossing over which velocity is measured.
+    #[serde(default = "ox_velocity_window_ms")]
+    pub velocity_window_ms: f32,
+    /// "speed" (peak travel/s, default) or "depth" (peak travel, like the Wooting backend).
+    #[serde(default = "ox_velocity_source")]
+    pub velocity_source: String,
+    /// Speed in travel/s that maps to velocity 127.
+    #[serde(default = "ox_velocity_speed_max")]
+    pub velocity_speed_max: f32,
+    /// Span over which speed is measured (smooths ADC noise).
+    #[serde(default = "ox_speed_span_ms")]
+    pub speed_span_ms: f32,
+    /// Index into the shared velocity profiles (0 linear, 1 gamma 1.6, 2 gamma 0.7, 3 log, 4 invlog).
+    #[serde(default)]
+    pub velocity_profile: usize,
+    /// "off" (default), "speed-mapped" or "peak-mapped".
+    #[serde(default = "ox_aftertouch_mode")]
+    pub aftertouch_mode: String,
+    #[serde(default = "default_aftertouch_delta")]
+    pub aftertouch_delta: f32,
+    #[serde(default = "default_aftertouch_speed_max")]
+    pub aftertouch_speed_max: f32,
+    /// Module USB serial -> `.ltn` board. Modules not listed get the lowest free board in
+    /// serial order.
+    #[serde(default)]
+    pub boards: Vec<OpenxenBoardSettings>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenxenBoardSettings {
+    pub serial: String,
+    pub board: u8,
+}
+
+impl Default for OpenxenSettings {
+    fn default() -> Self {
+        Self {
+            press_threshold: ox_press_threshold(),
+            release_delta: ox_release_delta(),
+            velocity_window_ms: ox_velocity_window_ms(),
+            velocity_source: ox_velocity_source(),
+            velocity_speed_max: ox_velocity_speed_max(),
+            speed_span_ms: ox_speed_span_ms(),
+            velocity_profile: 0,
+            aftertouch_mode: ox_aftertouch_mode(),
+            aftertouch_delta: default_aftertouch_delta(),
+            aftertouch_speed_max: default_aftertouch_speed_max(),
+            boards: Vec::new(),
+        }
+    }
+}
+
+fn ox_press_threshold() -> f32 { 0.15 }
+fn ox_release_delta() -> f32 { 0.08 }
+fn ox_velocity_window_ms() -> f32 { 3.0 }
+fn ox_velocity_source() -> String { "speed".into() }
+fn ox_velocity_speed_max() -> f32 { 60.0 }
+fn ox_speed_span_ms() -> f32 { 1.0 }
+fn ox_aftertouch_mode() -> String { "off".into() }
 
 /// Reserved for future migration of Exquis CLI defaults. Empty for now.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -317,6 +392,7 @@ pub fn store_last_layout(kind: crate::layouts::LayoutKind, path: &std::path::Pat
     match kind {
         crate::layouts::LayoutKind::Wtn => settings.last_wtn = Some(name),
         crate::layouts::LayoutKind::Xtn => settings.last_xtn = Some(name),
+        crate::layouts::LayoutKind::Ltn => settings.last_ltn = Some(name),
     }
     let p = default_settings_path();
     if let Some(parent) = p.parent() {

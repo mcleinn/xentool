@@ -313,7 +313,7 @@ fn used_channels(wtn: &Wtn, board: u8, octave_shift: i16, octave_hold: bool) -> 
 ///
 /// Algorithm ported verbatim from
 /// `C:\Dev-Free\xenwooting\xenwooting\src\bin\xenwooting.rs:1500-1518`.
-fn publish_tuning(master: &MtsMaster, edo: i32, pitch_offset: i32) -> Result<()> {
+pub(crate) fn publish_tuning(master: &MtsMaster, edo: i32, pitch_offset: i32) -> Result<()> {
     // Global 128-note table — for non-multichannel-aware clients. Treats
     // every MIDI note as its own EDO step shifted by `pitch_offset`.
     let mut global = [0.0f64; 128];

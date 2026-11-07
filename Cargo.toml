@@ -43,12 +43,22 @@ midir = "0.10"
 # `termux-clipboard-set` instead.
 arboard = "3.6"
 
+# openxen modules (src/openxen/): analog stream over a vendor HID interface. Pure-Rust
+# hidapi backends on Windows and Linux (no C toolchain); not built for Android.
+[target.'cfg(windows)'.dependencies]
+hidapi = { version = "2.6", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+hidapi = { version = "2.6" }
+
 [target.'cfg(target_os = "android")'.dependencies]
 # dup2() so the termux-usb re-exec'd child draws its TUI on the terminal
 # instead of termux-api's relay pipe (see exquis::usbmidi::bootstrap).
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# openxen (src/openxen/): pure-Rust hidraw backend
+hidapi = { version = "2.6", default-features = false, features = ["linux-native"] }
 jack = "0.11"
 alsa = "0.9"
 

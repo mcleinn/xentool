@@ -14,6 +14,8 @@ use crate::exquis::proto::{Color, ColorCorrection, NamedZone};
 pub const DEFAULT_OUTPUT_WOOTING: &str = "Xentool Wooting";
 #[cfg(all(unix, not(target_os = "android")))]
 pub const DEFAULT_OUTPUT_EXQUIS: &str = "Xentool Exquis MPE";
+#[cfg(all(unix, not(target_os = "android")))]
+pub const DEFAULT_OUTPUT_OPENXEN: &str = "Xentool openxen";
 #[cfg(target_os = "android")]
 pub const DEFAULT_OUTPUT_WOOTING: &str = "osc://127.0.0.1:57120";
 #[cfg(target_os = "android")]
@@ -22,6 +24,8 @@ pub const DEFAULT_OUTPUT_EXQUIS: &str = "osc://127.0.0.1:57120";
 pub const DEFAULT_OUTPUT_WOOTING: &str = "loopMIDI Port";
 #[cfg(not(unix))]
 pub const DEFAULT_OUTPUT_EXQUIS: &str = "loopMIDI Port";
+#[cfg(not(unix))]
+pub const DEFAULT_OUTPUT_OPENXEN: &str = "loopMIDI Port";
 
 /// Shared color-correction options for commands that send colors to the Exquis.
 #[derive(Debug, Clone, Args)]
