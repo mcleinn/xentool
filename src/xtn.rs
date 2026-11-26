@@ -195,13 +195,8 @@ pub fn write_xtn_layout(layout: &XtnLayout) -> String {
         indices.sort();
         for idx in indices {
             let p = &board.pads[&idx];
-            let to8 = |v: u8| -> u8 { ((v as u32 * 255 + 63) / 127).min(255) as u8 };
-            let hex = format!(
-                "{:02X}{:02X}{:02X}",
-                to8(p.color.red),
-                to8(p.color.green),
-                to8(p.color.blue),
-            );
+            let (r, g, b) = p.color.to_rgb8();
+            let hex = format!("{r:02X}{g:02X}{b:02X}");
             out.push_str(&format!("Key_{idx}={}\n", p.key));
             out.push_str(&format!("Chan_{idx}={}\n", p.chan));
             out.push_str(&format!("Col_{idx}={hex}\n"));

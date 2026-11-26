@@ -34,6 +34,18 @@ impl Color {
         })
     }
 
+    /// From 8-bit RGB, scaled like `from_hex`.
+    pub fn from_rgb8(r: u8, g: u8, b: u8) -> Self {
+        let scale = |v: u8| -> u8 { ((v as u32 * 127 + 127) / 255) as u8 };
+        Self::new(scale(r), scale(g), scale(b))
+    }
+
+    /// Back to 8-bit RGB (inverse of the `from_hex` scaling, as `.xtn` files are written).
+    pub fn to_rgb8(self) -> (u8, u8, u8) {
+        let to8 = |v: u8| -> u8 { ((v as u32 * 255 + 63) / 127).min(255) as u8 };
+        (to8(self.red), to8(self.green), to8(self.blue))
+    }
+
     pub fn to_7bit(self) -> [u8; 4] {
         [self.red, self.green, self.blue, 0x00]
     }
