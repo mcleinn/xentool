@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -132,10 +132,13 @@ fn build_identifier(device: &ExquisDevice) -> Option<DeviceIdentifier> {
 /// can be unit-tested without mocking the filesystem.
 ///
 /// Two distinct concerns:
-///   - **Live session slots.** What this run sees as `board0`, `board1`,
-///     ... up to the count of currently-connected devices. These can
-///     gap-fill so the caller always gets a contiguous board0..boardN-1
-///     vector.
+///   - **Live session boards.** A connected, pinned device keeps its
+///     *pinned* index as its live `board_name`, even when a lower-indexed
+///     board is currently absent. The live vector is therefore intentionally
+///     NON-CONTIGUOUS (e.g. board0, board1, board3 when board2's device is
+///     unplugged), so `layout.boards.get("board3")` loads the matching
+///     `[Board3]` section onto the connected device and the absent board's
+///     section loads onto nothing. Invariant: pin name == loaded section.
 ///   - **Persistent config.** A *durable* device → board name pin.
 ///     Survives transient disconnects and is never overwritten by a
 ///     different physical device taking a board's slot during a partial
@@ -156,68 +159,65 @@ pub fn compute_board_assignments(
         return (vec![], config.clone());
     }
 
-    // --- Phase A: live-session slot allocation ---
-    // For the run that's about to happen, we still want a contiguous
-    // board0..board{total-1} vector. Pinned devices land at their
-    // pinned slot when in range; the rest fill the gaps.
-    let mut preferred: Vec<(usize, usize)> = Vec::new(); // (board_index, device_index)
-    let mut unassigned_device_indices: Vec<usize> = Vec::new();
+    // --- Phase A: resolve each connected device to a live board index ---
+    // A pinned, present device keeps its pinned index verbatim (no range
+    // restriction) so the live vector can be non-contiguous. Unpinned
+    // devices — and, defensively, any second device that resolves to an
+    // already-taken pin — get the lowest index that is neither taken this
+    // run nor reserved by a config pin. Reserving config pins here is what
+    // stops a brand-new device from stealing an absent device's slot, and
+    // it mirrors Phase C exactly so the live and persisted views agree.
+    let mut taken: HashSet<usize> = HashSet::new();
+    let mut assignment: Vec<(usize, usize)> = Vec::with_capacity(total); // (board_idx, device_idx)
+    let mut needs_fresh: Vec<usize> = Vec::new(); // device indices needing a fresh index
 
+    // First pass: honour valid, non-colliding pins at their pinned index.
     for (di, device) in devices.iter().enumerate() {
         match find_existing_board(device, config).and_then(|n| parse_board_index(&n)) {
-            Some(board_idx) => preferred.push((board_idx, di)),
-            None => unassigned_device_indices.push(di),
-        }
-    }
-
-    preferred.sort_by_key(|(idx, _)| *idx);
-
-    let mut slots: Vec<Option<usize>> = vec![None; total];
-    let mut placed: Vec<bool> = vec![false; devices.len()];
-
-    for &(pref_idx, di) in &preferred {
-        if pref_idx < total && slots[pref_idx].is_none() {
-            slots[pref_idx] = Some(di);
-            placed[di] = true;
-        }
-    }
-
-    // Devices with a preferred slot that's out of range or already taken
-    // fall through to the unassigned pool and gap-fill.
-    for &(_, di) in &preferred {
-        if !placed[di] {
-            unassigned_device_indices.push(di);
-        }
-    }
-
-    let mut unassigned_iter = unassigned_device_indices.into_iter();
-    for slot in &mut slots {
-        if slot.is_none() {
-            if let Some(di) = unassigned_iter.next() {
-                *slot = Some(di);
+            Some(idx) if !taken.contains(&idx) => {
+                taken.insert(idx);
+                assignment.push((idx, di));
             }
+            // Unpinned, or a pin that collides with another connected
+            // device this run — fall through to fresh allocation below.
+            _ => needs_fresh.push(di),
+        }
+    }
+
+    // Second pass: lowest index not taken this run and not reserved by a
+    // config pin. Enumeration order is preserved, matching Phase C.
+    for di in needs_fresh {
+        let mut idx = 0usize;
+        loop {
+            let reserved = config.devices.contains_key(&format!("board{idx}"));
+            if !taken.contains(&idx) && !reserved {
+                taken.insert(idx);
+                assignment.push((idx, di));
+                break;
+            }
+            idx += 1;
         }
     }
 
     // --- Phase B: build the live BoardAssignment vector ---
+    // Order by board index so callers see board0, board1, ... (with gaps),
+    // regardless of MIDI enumeration order.
+    assignment.sort_by_key(|(board_idx, _)| *board_idx);
     let mut result = Vec::with_capacity(total);
-    for (i, slot) in slots.iter().enumerate() {
-        if let Some(di) = slot {
-            let device = &devices[*di];
-            result.push(BoardAssignment {
-                board_name: format!("board{i}"),
-                device: device.clone(),
-            });
-        }
+    for (board_idx, di) in assignment {
+        result.push(BoardAssignment {
+            board_name: format!("board{board_idx}"),
+            device: devices[di].clone(),
+        });
     }
 
     // --- Phase C: update the persistent config WITHOUT dropping pins. ---
     // Start from the existing config so absent devices' pins survive.
-    // Only insert for currently-connected devices that don't already
-    // have a pin; never overwrite an existing pin.
+    // Only insert for currently-connected devices that don't already have
+    // a pin; never overwrite an existing pin. Iterating `devices` in
+    // enumeration order makes the fresh-index choice identical to Phase A.
     let mut new_config_devices = config.devices.clone();
-    for slot in slots.iter().flatten() {
-        let device = &devices[*slot];
+    for device in devices {
         if find_existing_board(device, config).is_some() {
             continue; // pin already exists — preserve it untouched.
         }
@@ -317,9 +317,10 @@ mod tests {
 
         let (assignments, new_config) = compute_board_assignments(&config, &devices);
 
-        // Live session: A still at board0, C still at board2 (its pin in
-        // range), D gap-fills the empty slot 1 since its pin (3) is out of
-        // range for a 3-device run.
+        // Live session: each present device keeps its PINNED board index,
+        // even though board1 (B) is absent. The result is intentionally
+        // NON-CONTIGUOUS — board0, board2, board3 with board1 missing — so
+        // every device serves the [BoardN] section matching its pin.
         assert_eq!(assignments.len(), 3);
         let by_board: HashMap<&str, &str> = assignments
             .iter()
@@ -332,16 +333,102 @@ mod tests {
             .collect();
         assert_eq!(by_board.get("board0"), Some(&"A"));
         assert_eq!(by_board.get("board2"), Some(&"C"));
-        // D fills the gap at board1 in the live session.
-        assert_eq!(by_board.get("board1"), Some(&"D"));
+        assert_eq!(by_board.get("board3"), Some(&"D"));
+        // D keeps board3 (its pin); it does NOT gap-fill board1 anymore.
+        // board1 (B's pin) is simply absent from the live vector.
+        assert!(!by_board.contains_key("board1"));
 
         // Persistent config: B's pin is preserved. D stays pinned to
-        // board3 (its original spot), NOT moved to board1 just because
-        // it gap-filled there in this session.
+        // board3 (its original spot).
         assert_eq!(pin(&new_config, "board0").as_deref(), Some("A"));
         assert_eq!(pin(&new_config, "board1").as_deref(), Some("B"));
         assert_eq!(pin(&new_config, "board2").as_deref(), Some("C"));
         assert_eq!(pin(&new_config, "board3").as_deref(), Some("D"));
+    }
+
+    /// A mid-range absent pin produces a NON-CONTIGUOUS live vector: present
+    /// pinned devices keep their indices (board0, board1, board3) with
+    /// board2 skipped, and a brand-new device takes the lowest index that is
+    /// neither taken this run nor reserved by a config pin — so it never
+    /// steals the absent board2 slot. Live and persistent views agree.
+    #[test]
+    fn noncontiguous_live_assignment_with_absent_middle_pin() {
+        let config = make_config(&[
+            ("board0", "A"),
+            ("board1", "B"),
+            ("board2", "C"),
+            ("board3", "D"),
+        ]);
+        // C (board2) is unplugged; A, B, D present plus a brand-new E.
+        let devices = vec![
+            make_device(1, "A"),
+            make_device(2, "B"),
+            make_device(3, "D"),
+            make_device(4, "E"),
+        ];
+
+        let (assignments, new_config) = compute_board_assignments(&config, &devices);
+
+        let by_board: HashMap<&str, &str> = assignments
+            .iter()
+            .map(|a| {
+                (
+                    a.board_name.as_str(),
+                    a.device.usb_info.as_ref().unwrap().serial_number.as_deref().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(assignments.len(), 4);
+
+        // Present pins keep their indices; board2 is skipped (gap).
+        assert_eq!(by_board.get("board0"), Some(&"A"));
+        assert_eq!(by_board.get("board1"), Some(&"B"));
+        assert_eq!(by_board.get("board3"), Some(&"D"));
+        assert!(!by_board.contains_key("board2"));
+        // New device E does NOT steal board2 (C's absent pin); it lands on
+        // the lowest free, non-reserved index: board4.
+        assert_eq!(by_board.get("board4"), Some(&"E"));
+
+        // The live vector is ordered by board index, with the gap.
+        let order: Vec<&str> = assignments.iter().map(|a| a.board_name.as_str()).collect();
+        assert_eq!(order, vec!["board0", "board1", "board3", "board4"]);
+
+        // Persistent config: C's pin survives, E pinned to board4.
+        assert_eq!(pin(&new_config, "board0").as_deref(), Some("A"));
+        assert_eq!(pin(&new_config, "board1").as_deref(), Some("B"));
+        assert_eq!(pin(&new_config, "board2").as_deref(), Some("C"));
+        assert_eq!(pin(&new_config, "board3").as_deref(), Some("D"));
+        assert_eq!(pin(&new_config, "board4").as_deref(), Some("E"));
+    }
+
+    /// Edge case: the absent pin is board0. A brand-new device must NOT take
+    /// board0 (reserved by the absent device's pin); it lands on the lowest
+    /// free, non-reserved index instead.
+    #[test]
+    fn new_device_does_not_steal_absent_board0() {
+        let config = make_config(&[("board0", "A"), ("board1", "B")]);
+        // A (board0) absent; B present plus brand-new E.
+        let devices = vec![make_device(1, "B"), make_device(2, "E")];
+
+        let (assignments, new_config) = compute_board_assignments(&config, &devices);
+
+        let by_board: HashMap<&str, &str> = assignments
+            .iter()
+            .map(|a| {
+                (
+                    a.board_name.as_str(),
+                    a.device.usb_info.as_ref().unwrap().serial_number.as_deref().unwrap(),
+                )
+            })
+            .collect();
+        // B keeps board1; E does not take absent board0, gets board2.
+        assert_eq!(by_board.get("board1"), Some(&"B"));
+        assert_eq!(by_board.get("board2"), Some(&"E"));
+        assert!(!by_board.contains_key("board0"));
+
+        assert_eq!(pin(&new_config, "board0").as_deref(), Some("A"));
+        assert_eq!(pin(&new_config, "board1").as_deref(), Some("B"));
+        assert_eq!(pin(&new_config, "board2").as_deref(), Some("E"));
     }
 
     /// All four boards present after a partial-sync episode — the original

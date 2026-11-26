@@ -68,6 +68,14 @@ html, body {
   cursor: pointer;
 }
 
+/* Note currently displaced by X-bend rounding (nearest-EDO-step
+   display) — covers the notes/pcs/delta views (liveMainText) and the
+   root names / +N deltas inside interval lines (liveIntervals). */
+.liveMainText .liveNoteBent,
+.liveIntervals .liveNoteBent {
+  color: #ffd84a;
+}
+
 /* Superscript octave numerals — used wherever an octave is printed
    (named view, pcs view, delta view, intervals chord-line) so the
    numeral reads as a small digit raised above the baseline. */

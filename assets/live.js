@@ -307,6 +307,29 @@
     return uniqSorted(all);
   }
 
+  // Set of displayed pitches currently displaced by X-bend rounding.
+  // `live.bent` is absent on older backends / Wooting → empty set.
+  function bentPitchSet() {
+    var set = Object.create(null);
+    if (live && live.bent) {
+      var keys = Object.keys(live.bent);
+      for (var i = 0; i < keys.length; i++) {
+        var arr = live.bent[keys[i]];
+        if (!Array.isArray(arr)) continue;
+        for (var j = 0; j < arr.length; j++) set[arr[j]] = true;
+      }
+    }
+    return set;
+  }
+
+  // Pitch-class projection of bentPitchSet() — for views that render one
+  // entry per pitch class rather than per pitch.
+  function bentPcSet(bentP, edo) {
+    var set = Object.create(null);
+    for (var bp in bentP) set[mod(parseInt(bp, 10), edo)] = true;
+    return set;
+  }
+
   function chordResults() {
     return Array.isArray(live && live.chord) ? live.chord : [];
   }
@@ -315,6 +338,8 @@
   // octaves and per-note <span> wrappers render correctly.
   function computeMainText(pressed, edo) {
     if (pressed.length === 0) return '';
+    var bentP = bentPitchSet();
+    var bentPc = bentPcSet(bentP, edo);
     if (view === 'pcs') {
       // Collapse to one entry per pitch class, keeping the lowest octave
       // each pc was pressed in. Output as "pc<sup>octave</sup>" joined
@@ -329,7 +354,10 @@
         .map(function (s) { return parseInt(s, 10); })
         .sort(function (a, b) { return a - b; });
       return pcKeys.map(function (pc) {
-        return pcOctHtml(byPc[pc], edo);
+        var html = pcOctHtml(byPc[pc], edo);
+        return bentPc[pc]
+          ? ('<span class="liveNoteBent">' + html + '</span>')
+          : html;
       }).join('-');
     }
     if (view === 'delta') {
@@ -341,8 +369,16 @@
       var rootDisplay = hasXenharmGlyph(edo, rootPitch)
         ? (rootHtml + ' (' + pcOctHtml(rootPitch, edo) + ')')
         : rootHtml;
+      if (bentP[rootPitch]) {
+        rootDisplay = '<span class="liveNoteBent">' + rootDisplay + '</span>';
+      }
       var parts = [rootDisplay].concat(
-        deltas.map(function (d) { return '+' + d; })
+        deltas.map(function (d) {
+          var s = '+' + d;
+          return bentPc[mod(rootPitch + d, edo)]
+            ? ('<span class="liveNoteBent">' + s + '</span>')
+            : s;
+        })
       );
       return parts.join(' ');
     }
@@ -352,7 +388,8 @@
     return pressed.map(function (p) {
       var inner = pitchLabelHtml(p, edo);
       var hasAlts = variantCountForPitch(edo, p) > 1;
-      var cls = 'liveNote' + (hasAlts ? ' liveNoteAlts' : '');
+      var cls = 'liveNote' + (hasAlts ? ' liveNoteAlts' : '') +
+        (bentP[p] ? ' liveNoteBent' : '');
       return '<span class="' + cls + '" data-pitch="' + p + '">' +
         inner + '</span>';
     }).join(' ');
@@ -362,6 +399,8 @@
     var pitchClasses = uniqSorted(pressed.map(function (p) { return mod(p, edo); }));
     if (pitchClasses.length < 2) return [];
     var wantAllRoots = view === 'intervals';
+    var bentP = bentPitchSet();
+    var bentPc = bentPcSet(bentP, edo);
 
     // Lowest pressed pitch per pitch-class — used to derive a root note name.
     var rootPitchByPc = Object.create(null);
@@ -401,6 +440,9 @@
       var rootName = rootPitch !== undefined
         ? pitchLabelHtml(rootPitch, edo)
         : String(r.rootPc);
+      if (rootPitch !== undefined && bentP[rootPitch]) {
+        rootName = '<span class="liveNoteBent">' + rootName + '</span>';
+      }
       // "pc/octave" tag used inside the chord-line parens. Only carried
       // through when `showPcOct` is true — i.e. when the bare note name is
       // a real xenharm glyph and the parenthetical pc/oct adds info.
@@ -412,9 +454,14 @@
         ? r.rel
         : pitchClasses.map(function (pc) { return mod(pc - r.rootPc, edo); }).sort(function (a, b) { return a - b; });
       var deltas = rel.filter(function (d) { return d !== 0; });
-      var deltaText = deltas.map(function (d) {
+      // HTML — each piece is escaped here (bent deltas gain a span
+      // wrapper), so render sites assign without re-escaping.
+      var deltaHtml = deltas.map(function (d) {
         var label = intervalLabel(d, edo);
-        return label ? ('+' + d + '(' + label + ')') : ('+' + d);
+        var piece = escapeHtml(label ? ('+' + d + '(' + label + ')') : ('+' + d));
+        return bentPc[mod(r.rootPc + d, edo)]
+          ? ('<span class="liveNoteBent">' + piece + '</span>')
+          : piece;
       }).join('');
       var allNames = Array.isArray(r.names)
         ? r.names.slice().filter(Boolean).sort(function (a, b) {
@@ -428,7 +475,7 @@
         rootName: rootName,
         showPcOct: showPcOct,
         pattern: r.pattern || '',
-        deltaText: deltaText,
+        deltaHtml: deltaHtml,
         bestName: best,
         allNames: allNames,
       });
@@ -508,15 +555,15 @@
     var lines = computeIntervalLines(pressed, edo);
     for (var i = 0; i < lines.length; i++) {
       var it = lines[i];
-      // `rootName` and `rootPcOct` are HTML fragments (note name with
-      // a superscript octave); `deltaText` is plain text and needs
-      // escaping. Assign with innerHTML below. Parens only shown when
-      // a xenharm glyph is in play — otherwise the bare name already
-      // *is* the pc number, so the parenthetical is redundant noise.
+      // `rootName`, `rootPcOct`, and `deltaHtml` are HTML fragments
+      // (escaped where built in computeIntervalLines). Assign with
+      // innerHTML below. Parens only shown when a xenharm glyph is in
+      // play — otherwise the bare name already *is* the pc number, so
+      // the parenthetical is redundant noise.
       var title = it.showPcOct
         ? (it.rootName + '(' + it.rootPcOct + ')')
         : it.rootName;
-      var deltaHtml = escapeHtml(it.deltaText);
+      var deltaHtml = it.deltaHtml;
       var moreCount = Math.max(0, it.allNames.length - (it.bestName ? 1 : 0));
       var showMore = view !== 'intervals' && moreCount > 0;
 

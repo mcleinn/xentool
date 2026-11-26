@@ -119,6 +119,7 @@ pub fn submit_state(
             velocity_profile: Some(mode.velocity_profile),
         },
         pressed,
+        bent: BTreeMap::new(),
         layout_pitches: ctx.layout_pitches.clone(),
     };
     ctx.publisher.submit(state);
