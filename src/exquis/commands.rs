@@ -385,6 +385,12 @@ pub fn cmd_serve(
                 edo,
                 pitch_offset: layout.pitch_offset,
                 device_to_board,
+                bend_steps_per_x: if mts_esp {
+                    0.0
+                } else {
+                    x_gain * pb_range / 8192.0 / 12.0
+                },
+                runtime: Default::default(),
             }
             .into_handle(),
         )

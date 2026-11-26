@@ -22,6 +22,11 @@ pub struct LiveState {
     /// `BTreeMap` keeps board ordering stable in the JSON output ("board0",
     /// "board1", ...).
     pub pressed: BTreeMap<String, Vec<i32>>,
+    /// Pitches in `pressed` whose displayed value is currently displaced by
+    /// MPE X-bend rounding (values are the displayed/rounded pitches, not the
+    /// base pitches). Empty/omitted when no touch is bent past a step midpoint.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub bent: BTreeMap<String, Vec<i32>>,
     /// Full per-cell pitch list per board, used by the frontend to prefetch
     /// note names. `None` entries mark inactive cells.
     pub layout_pitches: BTreeMap<String, Vec<Option<i32>>>,
@@ -76,6 +81,7 @@ impl LiveState {
                 velocity_profile: None,
             },
             pressed: BTreeMap::new(),
+            bent: BTreeMap::new(),
             layout_pitches: BTreeMap::new(),
         }
     }
