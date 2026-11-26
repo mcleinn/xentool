@@ -22,8 +22,8 @@
 //!
 //! The description is backend-neutral: every key has an address (board, key), a position in
 //! the geometry's shared hex lattice (board shifts already applied) and a pitch. Clients
-//! need no knowledge of a particular keyboard. The openxen and the Wooting backend feed it
-//! (`openxen/serve.rs` `ApiLink`, `wooting/api_link.rs`).
+//! need no knowledge of a particular keyboard. All three backends feed it
+//! (`openxen/serve.rs` `ApiLink`, `wooting/api_link.rs`, `exquis/api_link.rs`).
 //!
 //! Threading: the serve loop owns the devices. HTTP threads only read shared state
 //! (`ApiHub`) and queue `Command`s, which the serve loop applies between scans.
@@ -382,6 +382,8 @@ struct LayoutState {
 }
 
 struct Inner {
+    /// Endpoints this session cannot serve: (path, why).
+    refused: Mutex<Vec<(&'static str, String)>>,
     layouts: Mutex<LayoutState>,
     setup: Mutex<Arc<Setup>>,
     held: Mutex<BTreeSet<(u8, u8)>>,
@@ -401,6 +403,7 @@ impl ApiHub {
     pub fn new(setup: Setup) -> (Self, Receiver<Command>) {
         let (tx, rx) = unbounded();
         let inner = Inner {
+            refused: Mutex::new(Vec::new()),
             layouts: Mutex::new(LayoutState::default()),
             setup: Mutex::new(Arc::new(setup)),
             held: Mutex::new(BTreeSet::new()),
@@ -409,6 +412,16 @@ impl ApiHub {
             commands: tx,
         };
         (Self { inner: Arc::new(inner) }, rx)
+    }
+
+    /// This session cannot serve `path` (e.g. no MIDI output of its own): requests get a
+    /// 501 with `reason` instead of being queued and silently dropped.
+    pub fn refuse(&self, path: &'static str, reason: &str) {
+        self.inner.refused.lock().unwrap().push((path, reason.to_string()));
+    }
+
+    fn refusal(&self, path: &str) -> Option<String> {
+        self.inner.refused.lock().unwrap().iter().find(|(p, _)| *p == path).map(|(_, r)| r.clone())
     }
 
     /// Layout files next to `file` (same extension) become switchable.
@@ -605,6 +618,20 @@ impl TimedNotes {
         }
     }
 
+    /// True while a layout key sounds on `ch` (0..15). For backends that give every API
+    /// note a channel of its own (MPE).
+    pub fn uses_channel(&self, ch: u8) -> bool {
+        self.keyed.values().any(|v| v.0 == ch)
+    }
+
+    /// Release the layout keys sounding on `ch`.
+    pub fn release_channel(&mut self, ch: u8, midi: &mut impl MidiSink) {
+        let keys: Vec<(u8, u8)> = self.keyed.iter().filter(|(_, v)| v.0 == ch).map(|(k, _)| *k).collect();
+        for key in keys {
+            self.key_off(key, midi);
+        }
+    }
+
     pub fn release_all(&mut self, midi: &mut impl MidiSink) {
         for (ch, note, _) in self.raw.drain(..) {
             midi.send3([0x80 | ch, note, 0]);
@@ -683,6 +710,9 @@ fn body_of(request: &rouille::Request) -> Result<Vec<u8>, Response> {
 }
 
 fn handle(request: &rouille::Request, hub: &ApiHub) -> Response {
+    if let Some(reason) = hub.refusal(&request.url()) {
+        return Response::json(&serde_json::json!({ "error": reason })).with_status_code(501);
+    }
     match (request.method(), request.url().as_str()) {
         ("GET", "/api/setup") => Response::json(&*hub.setup()),
         ("GET", "/api/keys/state") => Response::json(&serde_json::json!({ "held": hub.held() })),
@@ -1003,6 +1033,43 @@ mod tests {
         assert_eq!(out, vec![[0x83, 64, 0]]);
         n.tick(at(10_000), &mut out);
         assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn timed_notes_know_their_channels() {
+        let t0 = Instant::now();
+        let mut out: Vec<[u8; 3]> = Vec::new();
+        let mut n = TimedNotes::default();
+        assert!(!n.uses_channel(14));
+        n.key_on((0, 5), 14, 60, 90, None, t0, &mut out);
+        n.key_on((1, 5), 13, 61, 90, None, t0, &mut out);
+        // a raw note is not a layout key
+        n.raw_on(&MidiNote { channel: 10, note: 76, velocity: 100, ms: 40 }, t0, &mut out);
+        assert!(n.uses_channel(14) && n.uses_channel(13) && !n.uses_channel(9));
+        out.clear();
+        n.release_channel(14, &mut out);
+        assert_eq!(out, vec![[0x8E, 60, 0]]);
+        assert!(!n.uses_channel(14) && n.uses_channel(13));
+    }
+
+    #[test]
+    fn a_refused_endpoint_answers_501_with_the_reason() {
+        let g = geometry_by_name("lumatone", 1).unwrap();
+        let (hub, commands) = ApiHub::new(build_setup("exquis", &g, "x", 31, &cells(&[0]), &[0]));
+        hub.refuse("/api/notes", "no MIDI output in this mode");
+        let port = spawn(hub.clone(), 0).unwrap();
+        let url = |p: &str| format!("http://127.0.0.1:{port}{p}");
+        match ureq::post(&url("/api/notes")).send_string(r#"{"on":[{"board":0,"key":1}]}"#) {
+            Err(ureq::Error::Status(501, r)) => {
+                let v: serde_json::Value = r.into_json().unwrap();
+                assert_eq!(v["error"], "no MIDI output in this mode");
+            }
+            other => panic!("expected 501, got {other:?}"),
+        }
+        assert!(commands.try_recv().is_err(), "nothing is queued");
+        // the other endpoints work as usual
+        assert_eq!(ureq::post(&url("/api/leds/overlay")).send_string(r#"{"clear":"all"}"#).unwrap().status(), 200);
+        assert!(commands.try_recv().is_ok());
     }
 
     #[test]
