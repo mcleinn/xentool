@@ -8,12 +8,14 @@
 //! dependency on Wooting-specific Rust crates.
 
 pub mod analog;
+pub mod api_link;
 pub mod commands;
 pub mod control_bar;
 pub mod geometry;
 pub mod hidmap;
 pub mod hud_ctx;
 pub mod modes;
+pub mod overlay;
 pub mod rgb;
 pub mod serve;
 pub mod ui;

@@ -16,12 +16,15 @@ use std::time::{Duration, Instant};
 use crate::layouts::{self, LayoutKind};
 use crate::mts::{MtsMaster, edo_freq_hz};
 use crate::settings::WootingSettings;
+use crate::api::KeyKind;
 use crate::wooting::analog::{self, DeviceId};
+use crate::wooting::api_link::{ApiLink, BoardInfo, out_channel};
 use crate::wooting::control_bar::{self, RgbCmd};
 use crate::wooting::hidmap::{
     HidMap, KeyLoc, compute_compact_col_offsets, hid, mirror_cols_4x14, rotate_4x14,
 };
 use crate::wooting::modes::{AftertouchMode, VelocityProfile, default_velocity_profiles};
+use crate::wooting::overlay::{Compositor, OverlayFrame};
 use crate::wooting::rgb;
 use crate::wooting::ui::{
     DeviceLine, HeldKeyDisplay, SNAPSHOT_INTERVAL, WootingSnapshot, run_wooting_serve_ui,
@@ -94,10 +97,13 @@ const MAX_KEYS_PER_DEVICE: usize = 256;
 
 // --- RGB worker thread ---
 
-fn spawn_rgb_worker(rx: Receiver<RgbCmd>) {
+/// Paints go through a `Compositor`, which keeps the API's overlay above them.
+fn spawn_rgb_worker(rx: Receiver<RgbCmd>, overlay_rx: Receiver<OverlayFrame>) {
     thread::spawn(move || {
         let mut last_flush = Instant::now();
         let mut dirty: HashMap<u8, bool> = HashMap::new();
+        let mut compositor = Compositor::new();
+        let mut changed: Vec<(crate::wooting::overlay::LedAddr, (u8, u8, u8))> = Vec::new();
 
         loop {
             if last_flush.elapsed() >= RGB_FLUSH_INTERVAL {
@@ -111,15 +117,24 @@ fn spawn_rgb_worker(rx: Receiver<RgbCmd>) {
                 last_flush = Instant::now();
             }
 
-            match rx.recv_timeout(Duration::from_millis(5)) {
-                Ok(cmd) => {
-                    let _ = rgb::with_sdk(|sdk| {
-                        sdk.array_set_single(cmd.device_index, cmd.row, cmd.col, cmd.rgb)
-                    });
-                    *dirty.entry(cmd.device_index).or_insert(false) = true;
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
-                Err(_) => return,
+            crossbeam_channel::select! {
+                recv(rx) -> cmd => match cmd {
+                    Ok(cmd) => {
+                        if let Some(shown) = compositor.set_base((cmd.device_index, cmd.row, cmd.col), cmd.rgb) {
+                            changed.push(((cmd.device_index, cmd.row, cmd.col), shown));
+                        }
+                    }
+                    Err(_) => return,
+                },
+                recv(overlay_rx) -> frame => match frame {
+                    Ok(frame) => compositor.set_overlay(&frame, &mut changed),
+                    Err(_) => return,
+                },
+                default(Duration::from_millis(5)) => continue,
+            }
+            for ((device_index, row, col), shown) in changed.drain(..) {
+                let _ = rgb::with_sdk(|sdk| sdk.array_set_single(device_index, row, col, shown));
+                *dirty.entry(device_index).or_insert(false) = true;
             }
         }
     });
@@ -142,6 +157,8 @@ enum KeyState {
         peak_speed: f32,
         out_ch: u8,
         note: u8,
+        /// `.wtn` cell index of the key (its address in the local API).
+        cell: u8,
         led_row: u8,
         led_col: u8,
         wtn_color: (u8, u8, u8),
@@ -149,6 +166,7 @@ enum KeyState {
     Held {
         out_ch: u8,
         note: u8,
+        cell: u8,
         led_row: u8,
         led_col: u8,
         wtn_color: (u8, u8, u8),
@@ -258,6 +276,14 @@ impl MidiOut {
     }
 }
 
+/// Notes of the local API go out the same way as those of the keys.
+impl crate::api::MidiSink for MidiOut {
+    fn send3(&mut self, msg: [u8; 3]) {
+        let _ = self.conn.send(&msg);
+        self.mirror(&msg);
+    }
+}
+
 // --- Helpers ---
 
 /// xenwooting.rs 1068–1075 — combine up/down amounts into a signed 14-bit
@@ -342,7 +368,7 @@ fn resolve_cell(
     rotation_deg: u16,
     wtn: &Wtn,
     wtn_board: u8,
-) -> Option<(KeyLoc, WtnCell)> {
+) -> Option<(KeyLoc, usize, WtnCell)> {
     let loc0 = map.loc_for(hid)?;
     // The physical `loc0` drives the LED (unrotated coords). For the WTN
     // cell lookup we rotate + mirror into the logical grid so rotated boards
@@ -352,7 +378,7 @@ fn resolve_cell(
     if cell.chan == 0 {
         return None;
     }
-    Some((loc0, cell))
+    Some((loc0, idx, cell))
 }
 
 // --- Musical key state machine ---
@@ -378,16 +404,15 @@ fn step_musical_key(
     aftertouch_delta: f32,
     octave_shift: i16,
     octave_hold: bool,
+    api: Option<&ApiLink>,
 ) {
     let now = Instant::now();
     let prev = state.keys.entry(hid).or_insert(KeyState::Idle);
     match *prev {
         KeyState::Idle => {
             if analog_val >= press_threshold {
-                if let Some((loc, cell)) = resolve_cell(hid, map, compact, rotation_deg, wtn, wtn_board) {
-                    let base = cell.chan.saturating_sub(1) as i16;
-                    let hold = if octave_hold { 1 } else { 0 };
-                    let out_ch = (base + octave_shift + hold).clamp(0, 15) as u8;
+                if let Some((loc, idx, cell)) = resolve_cell(hid, map, compact, rotation_deg, wtn, wtn_board) {
+                    let out_ch = out_channel(cell.chan, octave_shift, octave_hold);
                     *prev = KeyState::Tracking {
                         started: now,
                         peak: analog_val,
@@ -396,6 +421,7 @@ fn step_musical_key(
                         peak_speed: 0.0,
                         out_ch,
                         note: cell.key,
+                        cell: idx as u8,
                         led_row: loc.led_row,
                         led_col: loc.led_col,
                         wtn_color: cell.color,
@@ -440,6 +466,7 @@ fn step_musical_key(
         KeyState::Held {
             out_ch,
             note,
+            cell,
             led_row,
             led_col,
             wtn_color,
@@ -467,6 +494,9 @@ fn step_musical_key(
             // Release check (rapid-trigger style): drop below peak by `release_delta`.
             if analog_val + release_delta < *peak {
                 let _ = midi.note_off(out_ch, note);
+                if let Some(a) = api {
+                    a.key_event(wtn_board, cell, KeyKind::Off, 0, out_ch, note);
+                }
                 try_send_drop(
                     rgb_tx,
                     RgbCmd {
@@ -520,10 +550,12 @@ fn emit_peak_note_ons(
     midi: &mut MidiOut,
     velocity_profile: &VelocityProfile,
     velocity_peak_track_ms: u32,
+    wtn_board: u8,
+    api: Option<&ApiLink>,
 ) {
     let now = Instant::now();
     let window = Duration::from_millis(velocity_peak_track_ms as u64);
-    let mut to_upgrade: Vec<(u16, u8, u8, u8, u8, u8, (u8, u8, u8), f32, Instant, f32, f32)> =
+    let mut to_upgrade: Vec<(u16, u8, u8, u8, u8, u8, u8, (u8, u8, u8), f32, Instant, f32, f32)> =
         Vec::new();
     for (&hid, st) in state.keys.iter_mut() {
         if let KeyState::Tracking {
@@ -531,6 +563,7 @@ fn emit_peak_note_ons(
             peak,
             out_ch,
             note,
+            cell,
             led_row,
             led_col,
             wtn_color,
@@ -543,21 +576,25 @@ fn emit_peak_note_ons(
                 let shaped = velocity_profile.apply(peak.clamp(0.0, 1.0));
                 let velocity = (shaped * 126.0).round().clamp(0.0, 126.0) as u8 + 1;
                 to_upgrade.push((
-                    hid, out_ch, note, velocity, led_row, led_col, wtn_color, last_analog,
+                    hid, out_ch, note, cell, velocity, led_row, led_col, wtn_color, last_analog,
                     last_analog_ts.min(now), peak_speed, peak,
                 ));
             }
         }
     }
-    for (hid, ch, note, vel, led_row, led_col, wtn_color, last_analog, last_analog_ts, peak_speed, peak) in
+    for (hid, ch, note, cell, vel, led_row, led_col, wtn_color, last_analog, last_analog_ts, peak_speed, peak) in
         to_upgrade
     {
         let _ = midi.note_on(ch, note, vel);
+        if let Some(a) = api {
+            a.key_event(wtn_board, cell, KeyKind::On, vel, ch, note);
+        }
         state.keys.insert(
             hid,
             KeyState::Held {
                 out_ch: ch,
                 note,
+                cell,
                 led_row,
                 led_col,
                 wtn_color,
@@ -638,6 +675,34 @@ fn rgb_index_for_board(settings: &WootingSettings, wtn_board: u8) -> u8 {
         .unwrap_or(wtn_board)
 }
 
+/// The connected keyboards as the local API describes them, in board order.
+fn board_infos(
+    device_index_by_id: &HashMap<DeviceId, u8>,
+    octave_hold_by_device: &HashSet<DeviceId>,
+    settings: &WootingSettings,
+) -> Vec<BoardInfo> {
+    let mut v: Vec<BoardInfo> = device_index_by_id
+        .iter()
+        .map(|(id, &board)| BoardInfo {
+            board,
+            rgb_idx: rgb_index_for_board(settings, board),
+            octave_hold: octave_hold_by_device.contains(id),
+        })
+        .collect();
+    v.sort_by_key(|b| b.board);
+    v
+}
+
+/// A layout the serve loop is asked to load.
+struct LayoutSwitch {
+    path: PathBuf,
+    /// Asked for by the local API (which is told how it went).
+    from_api: bool,
+    /// RGB index of the keyboard whose layout key was pressed: its flash is painted again
+    /// after the repaint.
+    flash_rgb_idx: Option<u8>,
+}
+
 fn refresh_devices(out: &mut HashMap<DeviceId, u8>) -> Result<()> {
     let devs = analog::with_sdk(|sdk| sdk.connected_devices(32))?;
     out.clear();
@@ -704,6 +769,7 @@ pub fn cmd_serve_wtn(
     osc_port: u16,
     tune_supercollider: bool,
     jack_midi_mirror: bool,
+    api_port: Option<u16>,
     settings: &WootingSettings,
 ) -> Result<()> {
     let content = std::fs::read_to_string(&file)
@@ -746,7 +812,7 @@ pub fn cmd_serve_wtn(
             eprintln!("xentool: tuning broadcast disabled ({e:#})");
         }
     }
-    let edo = wtn.edo.with_context(|| {
+    let mut edo = wtn.edo.with_context(|| {
         format!(
             "Edo= not set in {}; add e.g. `Edo=31` before the first [Board] section.",
             file.display()
@@ -768,8 +834,11 @@ pub fn cmd_serve_wtn(
     let mut midi = MidiOut::open(&midi_port, jack_midi_mirror)?;
 
     // RGB worker + lazy-init Analog SDK.
+    // The overlay channel carries the local API's LED overlay; without `--api` nothing is
+    // ever sent on it (the sender is kept so that the worker keeps running).
     let (rgb_tx, rgb_rx) = unbounded::<RgbCmd>();
-    spawn_rgb_worker(rgb_rx);
+    let (overlay_tx, overlay_rx) = unbounded::<OverlayFrame>();
+    spawn_rgb_worker(rgb_rx, overlay_rx);
     analog::with_sdk(|_| Ok(()))?;
 
     // Shutdown flag — set by Ctrl-C and by the TUI on `q`.
@@ -873,6 +942,28 @@ pub fn cmd_serve_wtn(
 
     let mut states: HashMap<DeviceId, DeviceState> = HashMap::new();
 
+    // Local API (`--api`): key events out; LED overlay, notes and layout switches in.
+    // `api_boards` is the list of keyboards the API's description was built from.
+    let started = Instant::now();
+    let mut api_boards: Vec<BoardInfo> =
+        board_infos(&device_index_by_id, &octave_hold_by_device, settings);
+    let mut api: Option<ApiLink> = match api_port {
+        Some(port) => {
+            let link = ApiLink::new(
+                &wtn, edo, &active_wtn_path, &map, &api_boards, octave_shift, started,
+                overlay_tx.clone(),
+            );
+            let port = link.listen(port)?;
+            let _ = log_tx.try_send(format!(
+                "API: http://127.0.0.1:{port}/api/setup (this machine only)"
+            ));
+            Some(link)
+        }
+        None => None,
+    };
+    let mut api_boards_dirty = false;
+    let mut pending_layout: Option<LayoutSwitch> = None;
+
     loop {
         if shutdown.load(Ordering::Relaxed) {
             break;
@@ -880,6 +971,20 @@ pub fn cmd_serve_wtn(
         if last_hotplug.elapsed() >= HOTPLUG_INTERVAL {
             let _ = refresh_devices(&mut device_index_by_id);
             last_hotplug = Instant::now();
+            api_boards_dirty = true;
+        }
+        // Keyboards came or went, or an octave hold was toggled: the API's description
+        // follows (pitches include the hold) and the overlay moves to the right LEDs.
+        if api_boards_dirty {
+            api_boards_dirty = false;
+            if let Some(a) = api.as_ref() {
+                let now_boards =
+                    board_infos(&device_index_by_id, &octave_hold_by_device, settings);
+                if now_boards != api_boards {
+                    api_boards = now_boards;
+                    a.boards_changed(&wtn, &api_boards, octave_shift);
+                }
+            }
         }
 
         let total_boards = device_index_by_id.len() as u8;
@@ -992,10 +1097,13 @@ pub fn cmd_serve_wtn(
                 // Musical key-up.
                 if let Some(st) = state.keys.remove(&hid_code) {
                     if let KeyState::Held {
-                        out_ch, note, led_row, led_col, wtn_color, ..
+                        out_ch, note, cell, led_row, led_col, wtn_color, ..
                     } = st
                     {
                         let _ = midi.note_off(out_ch, note);
+                        if let Some(a) = api.as_ref() {
+                            a.key_event(wtn_board, cell, KeyKind::Off, 0, out_ch, note);
+                        }
                         try_send_drop(
                             &rgb_tx,
                             RgbCmd {
@@ -1061,6 +1169,7 @@ pub fn cmd_serve_wtn(
                                     "octave hold board{board}: {}",
                                     if now_held { "ON" } else { "OFF" }
                                 ));
+                                api_boards_dirty = true;
                             }
                             hid::RIGHT_ALT => {
                                 let now = Instant::now();
@@ -1154,92 +1263,16 @@ pub fn cmd_serve_wtn(
                             hid::CONTEXT_MENU => {
                                 // Layout cycle. Pressing ContextMenu advances
                                 // to the next `.wtn` file in ./wtn/ with wrap.
+                                // The switch itself happens after this scan
+                                // (see `pending_layout` below).
                                 if let Ok(new_path) =
                                     layouts::next(LayoutKind::Wtn, &active_wtn_path)
                                 {
-                                    if let Ok(content) = std::fs::read_to_string(&new_path)
-                                    {
-                                        if let Ok(new_wtn) = parse_wtn(&content) {
-                                            // Release all held notes for the active
-                                            // device. Other devices' notes are
-                                            // covered by the `all_notes_off()` CC 123
-                                            // broadcast on every channel (below).
-                                            for (_, ks) in state.keys.iter_mut() {
-                                                if let KeyState::Held { out_ch, note, .. } =
-                                                    *ks
-                                                {
-                                                    let _ = midi.note_off(out_ch, note);
-                                                }
-                                                *ks = KeyState::Idle;
-                                            }
-                                            midi.all_notes_off();
-
-                                            // Rebuild MTS tables (global + 16×128 multichannel).
-                                            if let Some(new_edo) = new_wtn.edo {
-                                                let _ = publish_tuning(
-                                                    &master,
-                                                    new_edo,
-                                                    new_wtn.pitch_offset,
-                                                );
-                                                let _ = master.set_scale_name(&format!(
-                                                    "{new_edo}-EDO"
-                                                ));
-                                            }
-
-                                            // Swap active layout.
-                                            wtn = new_wtn;
-                                            active_wtn_path = new_path.clone();
-                                            active_layout_filename = active_wtn_path
-                                                .file_name()
-                                                .map(|n| n.to_string_lossy().into_owned())
-                                                .unwrap_or_default();
-                                            let _ = log_tx.try_send(format!(
-                                                "layout: {}",
-                                                active_layout_filename
-                                            ));
-
-                                            // Refresh HUD ctx so the next
-                                            // snapshot reflects the new layout.
-                                            if let Some(h) = &hud_ctx {
-                                                let mut ctx = h.borrow_mut();
-                                                ctx.layout_id =
-                                                    crate::hud::layout_id_from_path(&new_path);
-                                                ctx.layout_name = ctx.layout_id.clone();
-                                                if let Some(new_edo) = wtn.edo {
-                                                    ctx.edo = new_edo;
-                                                }
-                                                ctx.pitch_offset = wtn.pitch_offset;
-                                                ctx.layout_pitches =
-                                                    crate::wooting::hud_ctx::build_layout_pitches(
-                                                        &wtn,
-                                                    );
-                                            }
-
-                                            // Repaint LEDs.
-                                            let pairs: Vec<(u8, u8)> = device_index_by_id
-                                                .values()
-                                                .copied()
-                                                .map(|b| {
-                                                    (b, rgb_index_for_board(settings, b))
-                                                })
-                                                .collect();
-                                            paint_initial_leds(
-                                                &wtn, &map, &compact_upright, &compact_rotated,
-                                                &rgb_tx, settings, aftertouch_mode,
-                                                &octave_hold_by_device, &pairs,
-                                            );
-
-                                            // Persist on a background thread so the
-                                            // hot loop never blocks on disk I/O.
-                                            let persist_path = new_path.clone();
-                                            std::thread::spawn(move || {
-                                                crate::settings::store_last_layout(
-                                                    LayoutKind::Wtn,
-                                                    &persist_path,
-                                                );
-                                            });
-                                        }
-                                    }
+                                    pending_layout = Some(LayoutSwitch {
+                                        path: new_path,
+                                        from_api: false,
+                                        flash_rgb_idx: Some(rgb_idx),
+                                    });
                                 }
                             }
                             _ => {}
@@ -1331,6 +1364,7 @@ pub fn cmd_serve_wtn(
                     settings.aftertouch_delta,
                     octave_shift,
                     octave_hold_by_device.contains(&device_id),
+                    api.as_ref(),
                 );
             }
 
@@ -1344,7 +1378,135 @@ pub fn cmd_serve_wtn(
                 &mut midi,
                 &velocity_profile,
                 settings.velocity_peak_track_ms,
+                wtn_board,
+                api.as_ref(),
             );
+        }
+
+        // --- Local API: apply what clients asked for (overlay, notes, layout). ---
+        if let Some(a) = api.as_mut() {
+            let now = Instant::now();
+            let any = a.apply_commands(&wtn, &api_boards, octave_shift, now, &mut midi);
+            a.tick_notes(now, &mut midi);
+            if let Some(name) = a.layout_request.take() {
+                pending_layout = Some(LayoutSwitch {
+                    path: active_wtn_path.with_file_name(format!("{name}.wtn")),
+                    from_api: true,
+                    flash_rgb_idx: None,
+                });
+            }
+            // A command wakes the LEDs like a key press (without swallowing a key), and
+            // while an overlay is shown the screensaver stays off.
+            if any || a.overlay_active() {
+                last_activity = now;
+            }
+            if any && screensaver_active {
+                screensaver_active = false;
+                let _ = log_tx.try_send("screensaver: wake (API)".to_string());
+                let pairs: Vec<(u8, u8)> =
+                    api_boards.iter().map(|b| (b.board, b.rgb_idx)).collect();
+                paint_initial_leds(
+                    &wtn, &map, &compact_upright, &compact_rotated, &rgb_tx, settings,
+                    aftertouch_mode, &octave_hold_by_device, &pairs,
+                );
+            }
+        }
+
+        // --- Layout switch (layout key or local API) ---
+        if let Some(switch) = pending_layout.take() {
+            let loaded = std::fs::read_to_string(&switch.path)
+                .with_context(|| format!("reading {}", switch.path.display()))
+                .and_then(|content| parse_wtn(&content));
+            match loaded {
+                Ok(new_wtn) => {
+                    // Release everything that sounds, on every keyboard; CC 123 on
+                    // every channel covers what a synth may still hold.
+                    for (dev_id, ds) in states.iter_mut() {
+                        let board = device_index_by_id.get(dev_id).copied().unwrap_or(0);
+                        for ks in ds.keys.values_mut() {
+                            if let KeyState::Held { out_ch, note, cell, .. } = *ks {
+                                let _ = midi.note_off(out_ch, note);
+                                if let Some(a) = api.as_ref() {
+                                    a.key_event(board, cell, KeyKind::Off, 0, out_ch, note);
+                                }
+                            }
+                            *ks = KeyState::Idle;
+                        }
+                    }
+                    if let Some(a) = api.as_mut() {
+                        a.release_all(&mut midi);
+                    }
+                    midi.all_notes_off();
+
+                    // Rebuild MTS tables (global + 16×128 multichannel). A layout
+                    // without `Edo=` keeps the tuning that is in use.
+                    if let Some(new_edo) = new_wtn.edo {
+                        let _ = publish_tuning(&master, new_edo, new_wtn.pitch_offset);
+                        let _ = master.set_scale_name(&format!("{new_edo}-EDO"));
+                        edo = new_edo;
+                    }
+
+                    // Swap active layout.
+                    wtn = new_wtn;
+                    active_wtn_path = switch.path;
+                    active_layout_filename = active_wtn_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let _ = log_tx.try_send(format!("layout: {}", active_layout_filename));
+
+                    // Refresh HUD ctx so the next snapshot reflects the new layout.
+                    if let Some(h) = &hud_ctx {
+                        let mut ctx = h.borrow_mut();
+                        ctx.layout_id = crate::hud::layout_id_from_path(&active_wtn_path);
+                        ctx.layout_name = ctx.layout_id.clone();
+                        ctx.edo = edo;
+                        ctx.pitch_offset = wtn.pitch_offset;
+                        ctx.layout_pitches = crate::wooting::hud_ctx::build_layout_pitches(&wtn);
+                    }
+
+                    // Repaint LEDs.
+                    let pairs: Vec<(u8, u8)> = device_index_by_id
+                        .values()
+                        .copied()
+                        .map(|b| (b, rgb_index_for_board(settings, b)))
+                        .collect();
+                    paint_initial_leds(
+                        &wtn, &map, &compact_upright, &compact_rotated, &rgb_tx, settings,
+                        aftertouch_mode, &octave_hold_by_device, &pairs,
+                    );
+                    if let Some(rgb_idx) = switch.flash_rgb_idx {
+                        control_bar::paint_flash_on_down(
+                            &rgb_tx, &settings.control_bar, rgb_idx, hid::CONTEXT_MENU,
+                        );
+                    }
+
+                    // Local API: new description, the overlay of the old layout is gone.
+                    if let Some(a) = api.as_mut() {
+                        api_boards =
+                            board_infos(&device_index_by_id, &octave_hold_by_device, settings);
+                        a.set_layout(&wtn, edo, &active_wtn_path, &api_boards, octave_shift);
+                    }
+
+                    // Persist on a background thread so the hot loop never blocks on
+                    // disk I/O.
+                    let persist_path = active_wtn_path.clone();
+                    std::thread::spawn(move || {
+                        crate::settings::store_last_layout(LayoutKind::Wtn, &persist_path);
+                    });
+                }
+                Err(e) => {
+                    let _ = log_tx.try_send(format!(
+                        "layout: switching to {} failed: {e:#}",
+                        switch.path.display()
+                    ));
+                    if switch.from_api {
+                        if let Some(a) = api.as_ref() {
+                            a.hub.layout_result(Some(format!("{e:#}")));
+                        }
+                    }
+                }
+            }
         }
 
         // --- Screensaver activation ---
@@ -1433,7 +1595,11 @@ pub fn cmd_serve_wtn(
         thread::sleep(POLL_INTERVAL);
     }
 
+    if let Some(a) = api.as_mut() {
+        a.release_all(&mut midi);
+    }
     midi.all_notes_off();
+    drop(overlay_tx);
     drop(master);
     let _ = log_tx.try_send("xentool serve: shutdown.".to_string());
     // Drop senders so the UI thread's recv_timeout returns Disconnected and

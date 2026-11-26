@@ -536,7 +536,7 @@ impl ApiHub {
         Events { next: log.last_seq, missed: after + 1 < first_kept, events }
     }
 
-    fn queue(&self, c: Command) -> bool {
+    pub(crate) fn queue(&self, c: Command) -> bool {
         self.inner.commands.send(c).is_ok()
     }
 }
