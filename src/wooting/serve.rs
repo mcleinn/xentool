@@ -484,12 +484,12 @@ fn step_musical_key(
             // Aftertouch emission.
             match aftertouch_mode {
                 AftertouchMode::Off => {}
-                AftertouchMode::SpeedMapped | AftertouchMode::PeakMapped => {
+                AftertouchMode::SpeedMapped | AftertouchMode::PeakMapped | AftertouchMode::Depth => {
                     let raw: f32 = match aftertouch_mode {
                         AftertouchMode::SpeedMapped => {
                             (*peak_speed / aftertouch_speed_max.max(0.001)).clamp(0.0, 1.0)
                         }
-                        AftertouchMode::PeakMapped => {
+                        AftertouchMode::PeakMapped | AftertouchMode::Depth => {
                             let denom = (1.0 - press_threshold).max(0.001);
                             ((*peak - press_threshold) / denom).clamp(0.0, 1.0)
                         }
@@ -815,7 +815,7 @@ pub fn cmd_serve_wtn(
     let (snap_tx, snap_rx) = bounded::<WootingSnapshot>(2);
     let (log_tx, log_rx) = bounded::<String>(64);
     let _ = log_tx.try_send(format!(
-        "xentool serve: {edo}-EDO | MIDI → `{midi_port}` | MTS-ESP master registered"
+        "xentool serve: {edo}-EDO | MIDI → `{midi_port}` | {}", crate::mts::status_text()
     ));
     let _ = log_tx.try_send(
         "xentool serve: polling Wooting(s) at ~1 kHz (Ctrl+C / q to stop)".to_string(),

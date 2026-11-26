@@ -31,6 +31,7 @@
 // precision.
 ~tuningEdo   = 31;   // edo31.wtn / edo31.xtn → 31; change to 12, 24, 53, ... as needed
 ~pitchOffset = 0;    // matches the .wtn / .xtn `PitchOffset=` header
+~drumChannel = 9;    // zero-based: MIDI channel 10 plays clicks, not piano notes (nil = off)
 ~tuningC0    = 16.351597831287414;  // Hz; do not touch unless xentool's reference changes
 ~bendRange   = 2;    // semitones; pianistic ±2 semis at full press of a Wooting
                      // bend key. xentool's Wooting backend emits raw 14-bit
@@ -62,13 +63,14 @@ s.waitForBoot({
         dampScale=1, brightScale=1, hammerHardness=100, detuneAmt=0.003,
         droneAmt=1.0, droneType=0,      // 0=CombL, 1=Sine, 2=Off
         pressSwellLo=1.0, pressSwellHi=1.0,
+        pressAmp=0, droneGain=1,        // aftertouch -> loudness/brightness up to hard-hit level; drone gain
         yMode=5, yRate=5,               // 0=LPF, 1=Trem, 2=Leslie, 3=Chorus, 4=Vibrato, 5=Off
         leslieMin=0.7, leslieMax=7.0,
         yMin=0, yCenter=0.5, yMax=1, yPitchTrack=0, yPitchRefHz=261.6|
 
         var hammer, strings, pianoSig, organSig, rhodesSig, sig, env;
         var pressSm, brightSm, sustainEx, sustain;
-        var bendRatio, freqSm;
+        var bendRatio, freqSm, ampEff;
         var rhodesAttack, leslieLfo;
         var yLpfSig, yTremSig, yLeslieSig, yChorusSig, yVibSig, yMapped, yEff;
 
@@ -77,6 +79,15 @@ s.waitForBoot({
         freqSm    = freq * bendRatio;
         brightSm  = bright.lag(0.10);
         pressSm   = press.lag(0.08);
+
+        // Loudness: the note-on amp, raised by aftertouch when pressAmp > 0. Both work in
+        // "velocity space" 0..1 (amp = 0.04 * 12.5 ** level, the velocity map of the note-on):
+        // level = max(vel, press * (1 - vel) * pressAmp). A slow press (vel ~ 0) can rise to
+        // the loudness and brightness of a hard hit; a hit keeps its own level even when the
+        // key then rests at the bottom (medium hit: stays medium). pressAmp = 0: as before.
+        ampEff = 0.04 * (12.5 ** max(
+            ((amp / 0.04).log / 12.5.log).clip(0, 1),
+            pressSm * (1 - ((amp / 0.04).log / 12.5.log).clip(0, 1)) * pressAmp));
 
         // Y-axis input mapping: 3-point Bezier (yMin → yCenter → yMax) +
         // pitch-tracked attenuation. Used by post-synth Y branches only;
@@ -97,7 +108,7 @@ s.waitForBoot({
             Pluck.ar(hammer, Impulse.kr(0), 0.05, (freqSm * (1 + detuneAmt)).reciprocal,   8 * dampScale, 0.45) * 0.6,
             Pluck.ar(hammer, Impulse.kr(0), 0.05, (freqSm * (1 - detuneAmt)).reciprocal,   8 * dampScale, 0.45) * 0.6,
         ]);
-        pianoSig = LPF.ar(strings, (800 + (amp * 4500)) * brightScale);
+        pianoSig = LPF.ar(strings, (800 + (ampEff * 4500)) * brightScale);
         pianoSig = pianoSig + (CombC.ar(pianoSig, 0.04, 0.03, 1) * 0.15);
 
         // === Organ voice (Hammond-style additive drawbars) ===
@@ -132,11 +143,11 @@ s.waitForBoot({
         // Quiet noise-excited resonator tuned to freqSm. droneAmt scales
         // amplitude; droneType picks the sustain DSP. CombL keeps the
         // pluck-derived character past Pluck's natural decay.
-        sustainEx = WhiteNoise.ar(1) * 0.02 * pressSm * droneAmt;
+        sustainEx = WhiteNoise.ar(1) * 0.02 * pressSm * droneAmt * droneGain;
         sustainEx = LPF.ar(sustainEx, 800 + (pressSm * 4000));
         sustain = Select.ar(droneType, [
             CombL.ar(sustainEx, 0.05, freqSm.reciprocal, 4),
-            SinOsc.ar(freqSm) * 0.05 * pressSm * droneAmt,
+            SinOsc.ar(freqSm) * 0.05 * pressSm * droneAmt * droneGain,
             DC.ar(0)
         ]);
         sig = sig + sustain;
@@ -173,9 +184,19 @@ s.waitForBoot({
 
         // velSensitivity bends the velocity → amp curve. 1.0 = linear (current),
         // <1 compresses (loud at low vel), >1 expands (quiet at low vel).
-        sig = sig * (amp.pow(velSensitivity)) * 0.5;
+        sig = sig * (ampEff.pow(velSensitivity)) * 0.5;
 
         Out.ar(0, Pan2.ar(sig, 0));
+    }).add;
+
+    // Percussion channel. xentool's local API sends metronome clicks on MIDI channel 10
+    // (General MIDI percussion; notes 76 / 77, the wood blocks). They are played here as a
+    // short woody tick, loudness from the velocity, and never as piano notes. To let a drum
+    // plugin on the same MIDI port play them instead, set ~drumChannel = nil.
+    SynthDef(\click, { |freq=1300, amp=0.4|
+        var env = EnvGen.kr(Env.perc(0.001, 0.05), doneAction: 2);
+        var sig = (SinOsc.ar(freq) + (BPF.ar(WhiteNoise.ar, freq * 2, 0.3) * 0.6)) * env * amp;
+        Out.ar(0, sig ! 2);
     }).add;
 
     SynthDef(\pianoReverb, { |mix=0.18, room=0.72, damp=0.5|
@@ -268,6 +289,8 @@ s.waitForBoot({
         droneType:      0,      // 0=CombL, 1=Sine, 2=Off
         pressSwellLo:   1.0,
         pressSwellHi:   1.0,
+        pressAmp:       0.0,    // 0 = loudness fixed at note-on (original), 1 = aftertouch up to hard-hit level
+        droneGain:      1.0,
         // Y-axis effect
         yMode:          5,      // 0=LPF, 1=Trem, 2=Leslie, 3=Chorus, 4=Vibrato, 5=Off
         yRate:          5.0,
@@ -327,7 +350,10 @@ s.waitForBoot({
                 num, ~noteName.value(num), vel, virtual_pitch,
                 freq.round(0.01), bendSemi.round(0.001)
             ), src);
-        if(vel > 0) {
+        if((chan == ~drumChannel) and: { vel > 0 }) {
+            Synth(\click, [\freq, num.midicps * 2, \amp, vel.linlin(1, 127, 0.05, 0.7)]);
+        };
+        if((vel > 0) and: { chan != ~drumChannel }) {
             // Free any earlier voice on the same (chan, num) before
             // replacing it — defends against missing noteOff messages.
             ~notes[chan] = ~notes[chan] ?? ();
@@ -350,6 +376,8 @@ s.waitForBoot({
                 \droneType,      ~kparams.droneType,
                 \pressSwellLo,   ~kparams.pressSwellLo,
                 \pressSwellHi,   ~kparams.pressSwellHi,
+                \pressAmp,       ~kparams.pressAmp,
+                \droneGain,      ~kparams.droneGain,
                 \yMode,          ~kparams.yMode,
                 \yRate,          ~kparams.yRate,
                 \leslieMin,      ~kparams.leslieMin,
@@ -497,6 +525,7 @@ s.waitForBoot({
             attackTime: 0.001, decayTime: 0.18, sustainLevel: 1.0, releaseTime: 0.18,
             dampScale: 1.0, brightScale: 1.0, hammerHardness: 100, detuneAmt: 0.003,
             droneAmt: 1.0, droneType: 0, pressSwellLo: 1.0, pressSwellHi: 1.0,
+            pressAmp: 0.0, droneGain: 1.0,
             yMode: 5, yRate: 5.0, leslieMin: 0.7, leslieMax: 7.0,
             yMin: 0, yCenter: 0.5, yMax: 1, yPitchTrack: 0, yPitchRefHz: 261.6,
             reverbMix: 0.18, reverbRoom: 0.72, masterAmp: 1.0

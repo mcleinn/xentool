@@ -76,6 +76,7 @@ pub fn key_params(s: &OpenxenSettings) -> KeyParams {
         aftertouch_mode: match s.aftertouch_mode.to_ascii_lowercase().as_str() {
             "speed-mapped" | "speed" => AftertouchMode::SpeedMapped,
             "peak-mapped" | "peak" => AftertouchMode::PeakMapped,
+            "depth" => AftertouchMode::Depth,
             _ => AftertouchMode::Off,
         },
         aftertouch_delta: s.aftertouch_delta,
@@ -101,6 +102,45 @@ pub fn led_config(s: &OpenxenSettings) -> LedConfig {
         highlight,
         timeout_ms: s.leds.timeout_ms,
         budget_ma: s.leds.power_budget_ma.min(led::BUDGET_MAX_MA),
+    }
+}
+
+/// LED screensaver: blank after `timeout` without a press while no note sounds; the next
+/// press wakes. Activity is a note-on (the key passed the press threshold), so rest noise
+/// and single spikes below the threshold never keep the LEDs on or wake them.
+pub(crate) struct Screensaver {
+    timeout: Option<Duration>,
+    last_activity: Instant,
+    pub active: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ScreensaverChange {
+    Blank,
+    Wake,
+}
+
+impl Screensaver {
+    pub fn new(timeout_sec: u32, now: Instant) -> Self {
+        let timeout = (timeout_sec > 0).then(|| Duration::from_secs(timeout_sec as u64));
+        Self { timeout, last_activity: now, active: false }
+    }
+
+    /// `pressed`: a note-on happened since the last call; `sounding`: any note still held.
+    pub fn tick(&mut self, now: Instant, pressed: bool, sounding: bool) -> Option<ScreensaverChange> {
+        if pressed || sounding {
+            self.last_activity = now;
+        }
+        if pressed && self.active {
+            self.active = false;
+            return Some(ScreensaverChange::Wake);
+        }
+        let timeout = self.timeout?;
+        if !self.active && !sounding && now.duration_since(self.last_activity) >= timeout {
+            self.active = true;
+            return Some(ScreensaverChange::Blank);
+        }
+        None
     }
 }
 
@@ -164,21 +204,223 @@ impl Module {
     }
 }
 
+// --- local API (`--api`): key events out, LED overlay and demonstration notes in ---
+
+/// Pitch of a layout cell: the same formula as the HUD and the tuning table.
+fn cell_pitch(chan: u8, key: u8, edo: i32, pitch_offset: i32) -> i32 {
+    (chan as i32 - 1) * edo + key as i32 + pitch_offset
+}
+
+/// Every playable cell of the layout, for the API's keyboard description.
+pub(crate) fn layout_cells(wtn: &Wtn, edo: i32) -> Vec<crate::api::LayoutCell> {
+    let mut out = Vec::new();
+    for (&board, cells) in wtn.boards.iter() {
+        for (k, c) in cells.iter().enumerate().filter(|(_, c)| c.chan != 0) {
+            out.push(crate::api::LayoutCell { board, key: k as u8, pitch: cell_pitch(c.chan, c.key, edo, wtn.pitch_offset), color: c.color });
+        }
+    }
+    out
+}
+
+/// The serve loop's side of the API: publishes what happens, applies what is asked.
+struct ApiLink {
+    hub: crate::api::ApiHub,
+    rx: Receiver<crate::api::Command>,
+    geometry: crate::geometry::GeometryInfo,
+    cells: Vec<crate::api::LayoutCell>,
+    layout: String,
+    edo: i32,
+    pitch_offset: i32,
+    started: Instant,
+    /// The overlay as last asked for, so a module that reconnects gets it back.
+    overlay: HashMap<(u8, u8), led::Rgb>,
+    dim_base: Option<f32>,
+    /// Notes sounded for the API: (board, key) -> (channel, note, when to release).
+    notes: HashMap<(u8, u8), (u8, u8, Option<Instant>)>,
+    /// A layout the API asked to switch to; the serve loop takes it.
+    layout_request: Option<String>,
+    /// Raw MIDI notes sounding for the API (clicks, percussion): (channel 0..15, note, when to release).
+    raw_notes: Vec<(u8, u8, Instant)>,
+}
+
+impl ApiLink {
+    fn start(port: u16, wtn: &Wtn, edo: i32, file: &std::path::Path, started: Instant) -> Result<Self> {
+        let layout = crate::hud::layout_id_from_path(file);
+        let geometry = crate::geometry::geometry_by_name("lumatone", 1).context("lumatone geometry")?;
+        let cells = layout_cells(wtn, edo);
+        let (hub, rx) = crate::api::ApiHub::new(crate::api::build_setup("openxen", &geometry, &layout, edo, &cells, &[]));
+        hub.set_layout_file(file);
+        let port = crate::api::spawn(hub.clone(), port)?;
+        eprintln!("xentool API: listening on http://127.0.0.1:{port}/ (this machine only)");
+        Ok(Self { hub, rx, geometry, cells, layout, edo, pitch_offset: wtn.pitch_offset, started, overlay: HashMap::new(), dim_base: None, notes: HashMap::new(), layout_request: None, raw_notes: Vec::new() })
+    }
+
+    /// Another layout was loaded: new key description, and the overlay (which belonged to
+    /// the old notes) is gone on every board.
+    fn set_layout(&mut self, wtn: &Wtn, edo: i32, layout: String, boards: &BTreeMap<u8, Arc<str>>, led_tx: &crossbeam_channel::Sender<LedMsg>) {
+        self.cells = layout_cells(wtn, edo);
+        self.edo = edo;
+        self.pitch_offset = wtn.pitch_offset;
+        self.layout = layout;
+        self.overlay.clear();
+        for serial in boards.values() {
+            let _ = led_tx.send(LedMsg::Overlay { serial: serial.clone(), set: Vec::new(), clear: led::OverlayClear::All, dim_base: None });
+        }
+        self.publish_boards(boards);
+        self.hub.layout_result(None);
+    }
+
+    fn publish_boards(&self, boards: &BTreeMap<u8, Arc<str>>) {
+        let present: Vec<u8> = boards.keys().copied().collect();
+        self.hub.set_setup(crate::api::build_setup("openxen", &self.geometry, &self.layout, self.edo, &self.cells, &present));
+    }
+
+    fn key_event(&self, board: u8, key: usize, kind: crate::api::KeyKind, velocity: u8, ch: u8, note: u8) {
+        self.hub.publish_key(&crate::api::KeyEvent {
+            t_us: self.started.elapsed().as_micros() as u64,
+            board,
+            key: key as u8,
+            kind,
+            velocity,
+            pitch: ch as i32 * self.edo + note as i32 + self.pitch_offset,
+        });
+    }
+
+    fn overlay_active(&self) -> bool {
+        !self.overlay.is_empty()
+    }
+
+    /// Send a board its part of the overlay (after it connected).
+    fn resend_overlay(&self, board: u8, serial: &Arc<str>, led_tx: &crossbeam_channel::Sender<LedMsg>) {
+        let set: Vec<(u8, led::Rgb)> = self.overlay.iter().filter(|((b, _), _)| *b == board).map(|((_, k), rgb)| (*k, *rgb)).collect();
+        if !set.is_empty() || self.dim_base.is_some() {
+            let _ = led_tx.send(LedMsg::Overlay { serial: serial.clone(), set, clear: led::OverlayClear::All, dim_base: self.dim_base });
+        }
+    }
+
+    /// Apply queued commands. Returns true if there was any (counts as activity).
+    fn apply_commands(&mut self, boards: &BTreeMap<u8, Arc<str>>, wtn: &Wtn, midi: &mut MidiOut, led_tx: &crossbeam_channel::Sender<LedMsg>) -> bool {
+        use crate::api::{Command, OverlayClear};
+        let mut any = false;
+        while let Ok(cmd) = self.rx.try_recv() {
+            any = true;
+            match cmd {
+                Command::Overlay { clear, set, dim_base } => {
+                    match &clear {
+                        OverlayClear::None => {}
+                        OverlayClear::All => self.overlay.clear(),
+                        OverlayClear::Keys(keys) => {
+                            for k in keys {
+                                self.overlay.remove(k);
+                            }
+                        }
+                    }
+                    for &(b, k, rgb) in &set {
+                        if (k as usize) < led::KEYS {
+                            self.overlay.insert((b, k), rgb);
+                        }
+                    }
+                    if dim_base.is_some() {
+                        self.dim_base = dim_base;
+                    }
+                    for (&b, serial) in boards.iter() {
+                        let board_set: Vec<(u8, led::Rgb)> = set.iter().filter(|s| s.0 == b).map(|s| (s.1, s.2)).collect();
+                        let board_clear = match &clear {
+                            OverlayClear::None => led::OverlayClear::None,
+                            OverlayClear::All => led::OverlayClear::All,
+                            OverlayClear::Keys(keys) => led::OverlayClear::Keys(keys.iter().filter(|k| k.0 == b).map(|k| k.1).collect()),
+                        };
+                        let _ = led_tx.send(LedMsg::Overlay { serial: serial.clone(), set: board_set, clear: board_clear, dim_base });
+                    }
+                }
+                Command::Layout { name } => self.layout_request = Some(name),
+                Command::Midi { notes } => {
+                    for n in notes {
+                        let ch = n.channel.saturating_sub(1).min(15);
+                        midi.send([0x90 | ch, n.note & 0x7F, n.velocity & 0x7F]);
+                        self.raw_notes.push((ch, n.note & 0x7F, Instant::now() + Duration::from_millis(n.ms as u64)));
+                    }
+                }
+                Command::Notes { on, off } => {
+                    for key in off {
+                        self.note_off(key, midi);
+                    }
+                    for n in on {
+                        let key = (n.board, n.key);
+                        self.note_off(key, midi);
+                        if !boards.contains_key(&n.board) {
+                            continue;
+                        }
+                        if let Some(cell) = wtn.cell(n.board, n.key as usize).filter(|c| c.chan != 0) {
+                            let ch = cell.chan.saturating_sub(1).min(15);
+                            midi.send([0x90 | ch, cell.key & 0x7F, n.velocity & 0x7F]);
+                            let until = n.ms.map(|ms| Instant::now() + Duration::from_millis(ms as u64));
+                            self.notes.insert(key, (ch, cell.key & 0x7F, until));
+                        }
+                    }
+                }
+            }
+        }
+        any
+    }
+
+    fn note_off(&mut self, key: (u8, u8), midi: &mut MidiOut) {
+        if let Some((ch, note, _)) = self.notes.remove(&key) {
+            midi.send([0x80 | ch, note, 0]);
+        }
+    }
+
+    /// Release notes whose length has passed.
+    fn tick_notes(&mut self, now: Instant, midi: &mut MidiOut) {
+        if !self.raw_notes.is_empty() {
+            self.raw_notes.retain(|&(ch, note, until)| {
+                if now >= until {
+                    midi.send([0x80 | ch, note, 0]);
+                }
+                now < until
+            });
+        }
+        if self.notes.is_empty() {
+            return;
+        }
+        let due: Vec<(u8, u8)> = self.notes.iter().filter(|(_, v)| v.2.is_some_and(|t| now >= t)).map(|(k, _)| *k).collect();
+        for key in due {
+            self.note_off(key, midi);
+        }
+    }
+
+    fn release_all(&mut self, midi: &mut MidiOut) {
+        for (ch, note, _) in self.raw_notes.drain(..) {
+            midi.send([0x80 | ch, note, 0]);
+        }
+        let keys: Vec<(u8, u8)> = self.notes.keys().copied().collect();
+        for key in keys {
+            self.note_off(key, midi);
+        }
+    }
+}
+
 /// Map one key action to MIDI. Note-on resolves the layout cell (board, key) at press
 /// time; note-off and pressure use what was resolved, so a layout change mid-note cannot
 /// leave hanging notes.
-fn apply(action: Action, m: &mut Module, key: usize, wtn: &Wtn, midi: &mut MidiOut) {
+fn apply(action: Action, m: &mut Module, key: usize, wtn: &Wtn, midi: &mut MidiOut, api: Option<&ApiLink>) {
     match action {
         Action::NoteOn { velocity } => {
             if let Some(cell) = wtn.cell(m.board, key).filter(|c| c.chan != 0) {
                 let ch = cell.chan.saturating_sub(1).min(15);
                 midi.send([0x90 | ch, cell.key & 0x7F, velocity & 0x7F]);
                 m.sounding[key] = Some((ch, cell.key & 0x7F));
+                if let Some(a) = api {
+                    a.key_event(m.board, key, crate::api::KeyKind::On, velocity & 0x7F, ch, cell.key & 0x7F);
+                }
             }
         }
         Action::NoteOff => {
             if let Some((ch, note)) = m.sounding[key].take() {
                 midi.send([0x80 | ch, note, 0]);
+                if let Some(a) = api {
+                    a.key_event(m.board, key, crate::api::KeyKind::Off, 0, ch, note);
+                }
             }
         }
         Action::Pressure { value } => {
@@ -190,6 +432,17 @@ fn apply(action: Action, m: &mut Module, key: usize, wtn: &Wtn, midi: &mut MidiO
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Read a layout file: the layout and its tuning.
+fn load_layout(file: &std::path::Path) -> Result<(Wtn, i32)> {
+    let content = std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+    let wtn = parse_wtn(&content).with_context(|| format!("parsing {}", file.display()))?;
+    let edo = wtn.edo.with_context(|| {
+        format!("Edo= not set in {}; add e.g. `Edo=31` before the first [Board] section.", file.display())
+    })?;
+    Ok((wtn, edo))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_serve_ltn(
     file: PathBuf,
     midi_port: String,
@@ -198,14 +451,12 @@ pub fn cmd_serve_ltn(
     xenharm_url: String,
     osc_port: u16,
     tune_supercollider: bool,
+    api_port: Option<u16>,
     settings: &OpenxenSettings,
 ) -> Result<()> {
-    let content = std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
-    let wtn = parse_wtn(&content).with_context(|| format!("parsing {}", file.display()))?;
-    let edo = wtn.edo.with_context(|| {
-        format!("Edo= not set in {}; add e.g. `Edo=31` before the first [Board] section.", file.display())
-    })?;
-    let layout_filename = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut file = file;
+    let (mut wtn, mut edo) = load_layout(&file)?;
+    let mut layout_filename = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
 
     // HUD (same publisher/ctx as the Wooting backend: both read a Wtn).
     let hud_publisher = crate::hud::HudPublisher::new(crate::hud::LiveState::empty("openxen"));
@@ -254,7 +505,7 @@ pub fn cmd_serve_ltn(
 
     let (snap_tx, snap_rx) = bounded::<WootingSnapshot>(2);
     let (log_tx, log_rx) = bounded::<String>(64);
-    let _ = log_tx.try_send(format!("xentool serve (openxen, experimental): {edo}-EDO | MIDI → `{midi_port}` | MTS-ESP master registered"));
+    let _ = log_tx.try_send(format!("xentool serve (openxen, experimental): {edo}-EDO | MIDI → `{midi_port}` | {}", crate::mts::status_text()));
     let _ = log_tx.try_send("xentool serve: reading openxen module streams (Ctrl+C / q to stop)".to_string());
     let shutdown_ui = shutdown.clone();
     let hud_url_for_ui = hud_url.clone();
@@ -264,8 +515,11 @@ pub fn cmd_serve_ltn(
         }
     });
 
-    let hud_ctx: Option<crate::wooting::hud_ctx::HudWootingHandle> = if hud || tune_supercollider {
-        let layout_id = crate::hud::layout_id_from_path(&file);
+    let make_hud_ctx = |file: &std::path::Path, wtn: &Wtn, edo: i32| -> Option<crate::wooting::hud_ctx::HudWootingHandle> {
+        if !(hud || tune_supercollider) {
+            return None;
+        }
+        let layout_id = crate::hud::layout_id_from_path(file);
         Some(
             crate::wooting::hud_ctx::HudWootingCtx {
                 publisher: hud_publisher.clone(),
@@ -273,18 +527,17 @@ pub fn cmd_serve_ltn(
                 layout_name: layout_id,
                 edo,
                 pitch_offset: wtn.pitch_offset,
-                layout_pitches: crate::wooting::hud_ctx::build_layout_pitches(&wtn),
+                layout_pitches: crate::wooting::hud_ctx::build_layout_pitches(wtn),
             }
             .into_handle(),
         )
-    } else {
-        None
     };
+    let mut hud_ctx = make_hud_ctx(&file, &wtn, edo);
 
     // Persist the layout as the last used one (background thread; never in the hot loop).
     {
         let p = file.clone();
-        thread::spawn(move || crate::settings::store_last_layout(crate::layouts::LayoutKind::Ltn, &p));
+        thread::spawn(move || crate::settings::store_last_layout(crate::layouts::LayoutKind::Otn, &p));
     }
 
     let params = key_params(settings);
@@ -298,6 +551,15 @@ pub fn cmd_serve_ltn(
     let mut last_overflow = 0u64;
     let mut next_snapshot_at = Instant::now() + SNAPSHOT_INTERVAL;
     let started = Instant::now();
+    let mut screensaver = Screensaver::new(settings.leds.screensaver_timeout_sec, started);
+    let mut api: Option<ApiLink> = match api_port {
+        Some(port) => {
+            let link = ApiLink::start(port, &wtn, edo, &file, started)?;
+            let _ = log_tx.try_send(format!("API: http://127.0.0.1:{port}/api/setup (this machine only)"));
+            Some(link)
+        }
+        None => None,
+    };
 
     while !shutdown.load(Ordering::Relaxed) {
         if last_hotplug.elapsed() >= HOTPLUG_INTERVAL {
@@ -307,7 +569,76 @@ pub fn cmd_serve_ltn(
             last_hotplug = Instant::now();
         }
 
-        drain(&ev_rx, &mut modules, &mut boards, settings, &params, &profile, &wtn, &mut midi, &log_tx, &led_tx);
+        let pressed = drain(&ev_rx, &mut modules, &mut boards, settings, &params, &profile, &wtn, &mut midi, &log_tx, &led_tx, api.as_ref());
+        let sounding = modules.values().any(|m| m.sounding.iter().any(|s| s.is_some()));
+        // An API command wakes the LEDs like a key press, and an overlay keeps them on.
+        let (api_command, overlay_on) = match api.as_mut() {
+            Some(a) => {
+                let any = a.apply_commands(&boards, &wtn, &mut midi, &led_tx);
+                a.tick_notes(Instant::now(), &mut midi);
+                (any, a.overlay_active())
+            }
+            None => (false, false),
+        };
+        // The API asked for another layout (tuning): everything that sounds is released, the
+        // synth gets the new tuning, the keys their new colours, clients a new description.
+        if let Some(name) = api.as_mut().and_then(|a| a.layout_request.take()) {
+            let path = file.with_file_name(format!("{name}.{}", file.extension().and_then(|e| e.to_str()).unwrap_or("otn")));
+            let loaded = load_layout(&path).and_then(|(new_wtn, new_edo)| {
+                for m in modules.values_mut() {
+                    m.release_all(&mut midi);
+                }
+                if let Some(a) = api.as_mut() {
+                    a.release_all(&mut midi);
+                }
+                midi.all_notes_off();
+                master.set_scale_name(&format!("{new_edo}-EDO"))?;
+                publish_tuning(&master, new_edo, new_wtn.pitch_offset)?;
+                Ok((new_wtn, new_edo))
+            });
+            match loaded {
+                Ok((new_wtn, new_edo)) => {
+                    wtn = new_wtn;
+                    edo = new_edo;
+                    file = path;
+                    layout_filename = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    hud_ctx = make_hud_ctx(&file, &wtn, edo);
+                    for (b, serial) in boards.iter() {
+                        let _ = led_tx.send(LedMsg::Frame { serial: serial.clone(), frame: Box::new(board_frame(&wtn, *b)) });
+                    }
+                    if let Some(a) = api.as_mut() {
+                        a.set_layout(&wtn, edo, crate::hud::layout_id_from_path(&file), &boards, &led_tx);
+                    }
+                    let p = file.clone();
+                    thread::spawn(move || crate::settings::store_last_layout(crate::layouts::LayoutKind::Otn, &p));
+                    let _ = log_tx.try_send(format!("layout: {layout_filename} ({edo}-EDO)"));
+                }
+                Err(e) => {
+                    // the old layout stays; make sure its tuning is the one published
+                    let _ = master.set_scale_name(&format!("{edo}-EDO"));
+                    let _ = publish_tuning(&master, edo, wtn.pitch_offset);
+                    if let Some(a) = api.as_ref() {
+                        a.hub.layout_result(Some(format!("{e:#}")));
+                    }
+                    let _ = log_tx.try_send(format!("layout: switching to {name} failed: {e:#}"));
+                }
+            }
+        }
+        match screensaver.tick(Instant::now(), pressed || api_command, sounding || overlay_on) {
+            Some(ScreensaverChange::Blank) => {
+                for serial in boards.values() {
+                    let _ = led_tx.send(LedMsg::Frame { serial: serial.clone(), frame: Box::new([(0, 0, 0); led::KEYS]) });
+                }
+                let _ = log_tx.try_send("screensaver: LEDs off (idle)".to_string());
+            }
+            Some(ScreensaverChange::Wake) => {
+                for (b, serial) in boards.iter() {
+                    let _ = led_tx.send(LedMsg::Frame { serial: serial.clone(), frame: Box::new(board_frame(&wtn, *b)) });
+                }
+                let _ = log_tx.try_send("screensaver: wake".to_string());
+            }
+            None => {}
+        }
 
         if last_stats.elapsed() >= STATS_INTERVAL {
             let overflow = manager.overflow.load(Ordering::Relaxed);
@@ -327,7 +658,7 @@ pub fn cmd_serve_ltn(
 
         let now = Instant::now();
         if snapshot_due(now, &mut next_snapshot_at) {
-            let snap = build_snapshot(edo, &midi_port, &layout_filename, &params, &profile, &modules, started.elapsed());
+            let snap = build_snapshot(edo, &midi_port, &layout_filename, &params, &profile, &modules, started.elapsed(), screensaver.active);
             let _ = snap_tx.try_send(snap);
             if let Some(h) = &hud_ctx {
                 let held = modules.values().flat_map(|m| {
@@ -350,6 +681,9 @@ pub fn cmd_serve_ltn(
 
     for m in modules.values_mut() {
         m.release_all(&mut midi);
+    }
+    if let Some(a) = api.as_mut() {
+        a.release_all(&mut midi);
     }
     midi.all_notes_off();
     drop(manager);
@@ -374,7 +708,10 @@ fn drain(
     midi: &mut MidiOut,
     log_tx: &crossbeam_channel::Sender<String>,
     led_tx: &crossbeam_channel::Sender<LedMsg>,
-) {
+    api: Option<&ApiLink>,
+) -> bool {
+    let mut pressed = false;
+    let mut boards_changed = false;
     while let Ok(ev) = rx.try_recv() {
         match ev {
             Event::Connected { serial } => {
@@ -386,6 +723,10 @@ fn drain(
                         boards.insert(b, serial.clone());
                         modules.insert(serial.clone(), Module::new(b));
                         let _ = led_tx.send(LedMsg::Frame { serial: serial.clone(), frame: Box::new(board_frame(wtn, b)) });
+                        if let Some(a) = api {
+                            a.resend_overlay(b, &serial, led_tx);
+                        }
+                        boards_changed = true;
                         let _ = log_tx.try_send(format!("openxen: module {serial} -> board{b}"));
                     }
                     None => {
@@ -398,6 +739,7 @@ fn drain(
                 if let Some(mut m) = modules.remove(&serial) {
                     m.release_all(midi);
                     boards.remove(&m.board);
+                    boards_changed = true;
                     let _ = log_tx.try_send(format!("openxen: board{} ({serial}) disconnected: {reason}", m.board));
                 }
             }
@@ -422,12 +764,19 @@ fn drain(
                 }
                 for k in 0..(frame.num_keys as usize).min(MAX_KEYS) {
                     if let Some(a) = m.keys[k].step(frame.time_us, frame.travel[k], params, profile) {
-                        apply(a, m, k, wtn, midi);
+                        pressed |= matches!(a, Action::NoteOn { .. });
+                        apply(a, m, k, wtn, midi, api);
                     }
                 }
             }
         }
     }
+    if boards_changed {
+        if let Some(a) = api {
+            a.publish_boards(boards);
+        }
+    }
+    pressed
 }
 
 fn build_snapshot(
@@ -438,6 +787,7 @@ fn build_snapshot(
     profile: &VelocityProfile,
     modules: &HashMap<Arc<str>, Module>,
     _uptime: Duration,
+    screensaver_active: bool,
 ) -> WootingSnapshot {
     let mut held_keys: Vec<HeldKeyDisplay> = Vec::new();
     let mut lines: Vec<DeviceLine> = Vec::new();
@@ -460,7 +810,7 @@ fn build_snapshot(
         velocity_profile_name: format!("{} ({})", profile.name(), params.velocity_source.name()),
         manual_press_threshold: params.press_threshold,
         aftertouch_speed_max: params.aftertouch_speed_max,
-        screensaver_active: false,
+        screensaver_active,
         device_count: modules.len() as u8,
         octave_holds: lines,
         held_keys,
@@ -469,6 +819,30 @@ fn build_snapshot(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn screensaver_blanks_after_idle_and_wakes_on_press() {
+        let t0 = Instant::now();
+        let s = |secs: u64| t0 + Duration::from_secs(secs);
+        let mut ss = Screensaver::new(120, t0);
+        assert_eq!(ss.tick(s(60), false, false), None);
+        assert_eq!(ss.tick(s(119), false, false), None);
+        assert_eq!(ss.tick(s(120), false, false), Some(ScreensaverChange::Blank));
+        assert_eq!(ss.tick(s(500), false, false), None, "blank only once");
+        assert_eq!(ss.tick(s(501), true, true), Some(ScreensaverChange::Wake));
+        assert_eq!(ss.tick(s(502), false, false), None);
+        // a held note keeps the LEDs on however long it sounds
+        assert_eq!(ss.tick(s(1000), false, true), None);
+        assert_eq!(ss.tick(s(1119), false, false), None);
+        assert_eq!(ss.tick(s(1120), false, false), Some(ScreensaverChange::Blank));
+    }
+
+    #[test]
+    fn screensaver_zero_means_never() {
+        let t0 = Instant::now();
+        let mut ss = Screensaver::new(0, t0);
+        assert_eq!(ss.tick(t0 + Duration::from_secs(100_000), false, false), None);
+    }
     use super::*;
     use crate::settings::OpenxenBoardSettings;
 

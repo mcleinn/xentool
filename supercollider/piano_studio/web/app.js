@@ -56,6 +56,8 @@
         ]},
         { name: 'pressSwellLo', label: 'Amp swell at press=0', min: 0, max: 2, step: 0.01, fmt: v => v.toFixed(2) },
         { name: 'pressSwellHi', label: 'Amp swell at press=1', min: 0, max: 4, step: 0.01, fmt: v => v.toFixed(2) },
+        { name: 'pressAmp', label: 'Press -> loudness (0 = note-on only, 1 = up to hard hit)', min: 0, max: 1, step: 0.01, fmt: v => v.toFixed(2) },
+        { name: 'droneGain', label: 'Drone gain', min: 1, max: 20, step: 0.1, fmt: v => v.toFixed(1) },
       ],
     },
     {

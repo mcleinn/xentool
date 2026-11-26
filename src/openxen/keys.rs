@@ -77,7 +77,7 @@ pub enum Action {
 enum State {
     Idle { valley: f32 },
     Tracking { started_us: u64, peak: f32, peak_speed: f32 },
-    Held { peak: f32, peak_speed: f32, at_level: f32, last_pressure: u8, since_us: u64 },
+    Held { peak: f32, peak_speed: f32, at_level: f32, last_pressure: u8, since_us: u64, last_sent_us: u64 },
 }
 
 const HIST: usize = 16;
@@ -161,7 +161,14 @@ impl KeyMachine {
         self.push(now_us, travel);
         match &mut self.state {
             State::Idle { valley } => {
-                let armed = *valley < p.press_threshold || travel - *valley >= p.release_delta;
+                // Re-arm after a release: below the threshold, or `release_delta` deeper again.
+                // With aftertouch on, re-strike at once while still above the threshold, as
+                // the Wooting backend does: lifting a held key gives a quick staircase of new
+                // notes at the current (lower) depth, which a long synth release blends into
+                // a smooth fade ("pumping").
+                let armed = *valley < p.press_threshold
+                    || travel - *valley >= p.release_delta
+                    || matches!(p.aftertouch_mode, AftertouchMode::PeakMapped | AftertouchMode::SpeedMapped);
                 if travel >= p.press_threshold && armed {
                     self.state = State::Tracking { started_us: now_us, peak: travel, peak_speed: speed };
                 } else {
@@ -172,14 +179,23 @@ impl KeyMachine {
             State::Tracking { started_us, peak, peak_speed } => {
                 *peak = peak.max(travel);
                 *peak_speed = peak_speed.max(speed);
-                if travel < p.press_threshold - p.release_delta {
-                    self.state = State::Idle { valley: travel };       // abandoned before note-on
+                // Abandoned before note-on: back below threshold - release_delta, or near the
+                // top (half the threshold). The second rule matters when release_delta >=
+                // press_threshold (e.g. 0.12 / 0.10): without it a single noise spike above
+                // the threshold could never be abandoned and fired a note 6 ms later that
+                // ended on the next scan (ghost note; SuperCollider kept such voices forever).
+                if travel < p.press_threshold - p.release_delta || travel < p.press_threshold * 0.5 {
+                    self.state = State::Idle { valley: travel };
                     return None;
                 }
                 if now_us.saturating_sub(*started_us) >= p.velocity_window_us {
-                    let raw = match p.velocity_source {
-                        VelocitySource::Speed => *peak_speed / p.velocity_speed_max.max(0.001),
-                        VelocitySource::Depth => *peak,
+                    let raw = if p.aftertouch_mode == AftertouchMode::Depth {
+                        depth_level(*peak, p)        // start from the depth: a note can swell from silence
+                    } else {
+                        match p.velocity_source {
+                            VelocitySource::Speed => *peak_speed / p.velocity_speed_max.max(0.001),
+                            VelocitySource::Depth => *peak,
+                        }
                     };
                     let shaped = profile.apply(raw.clamp(0.0, 1.0));
                     let velocity = (shaped * 126.0).round().clamp(0.0, 126.0) as u8 + 1;
@@ -189,20 +205,47 @@ impl KeyMachine {
                         at_level: 0.0,
                         last_pressure: 0,
                         since_us: now_us,
+                        last_sent_us: now_us,
                     };
                     return Some(Action::NoteOn { velocity });
                 }
                 None
             }
-            State::Held { peak, peak_speed, at_level, last_pressure, .. } => {
+            State::Held { peak, peak_speed, at_level, last_pressure, last_sent_us, .. } => {
                 *peak = peak.max(travel);
                 *peak_speed = peak_speed.max(speed);
-                if travel + p.release_delta < *peak {
+                // Release: the key came up `release_delta` from its deepest point, or it is
+                // back near the top (below half the press threshold). The second rule keeps a
+                // light press that never went `release_delta` past the threshold from hanging.
+                let near_top = travel < p.press_threshold * 0.5;
+                let continuous = p.aftertouch_mode == AftertouchMode::Depth;
+                if near_top || (!continuous && travel + p.release_delta < *peak) {
                     self.state = State::Idle { valley: travel };
                     return Some(Action::NoteOff);
                 }
+                if continuous {
+                    // pressure follows the current depth both ways
+                    // average of the recent scans (~3 ms at 5 kHz) against sensor noise
+                    let smooth = self.hist[..self.len].iter().map(|&(_, tr)| tr).sum::<f32>() / self.len.max(1) as f32;
+                    let v = (profile.apply(depth_level(smooth, p)) * 127.0).round().clamp(0.0, 127.0) as u8;
+                    *at_level = v as f32 / 127.0;
+                    // Follows the key both ways, so sensor noise would toggle the value between
+                    // neighbours on every scan (~2500 messages/s per held key, enough to make
+                    // the synth drop note-offs). Send at most every DEPTH_PRESSURE_MIN_US and
+                    // only for a change of at least DEPTH_PRESSURE_DEADBAND (end values always).
+                    let step = ((p.aftertouch_delta * 127.0).round() as u32).max(DEPTH_PRESSURE_DEADBAND);
+                    let due = now_us.saturating_sub(*last_sent_us) >= DEPTH_PRESSURE_MIN_US;
+                    let moved = (v as i32 - *last_pressure as i32).unsigned_abs() >= step;
+                    let end = v != *last_pressure && (v == 127 || v == 0);
+                    if due && (moved || end) {
+                        *last_pressure = v;
+                        *last_sent_us = now_us;
+                        return Some(Action::Pressure { value: v });
+                    }
+                    return None;
+                }
                 let raw = match p.aftertouch_mode {
-                    AftertouchMode::Off => return None,
+                    AftertouchMode::Off | AftertouchMode::Depth => return None,
                     AftertouchMode::SpeedMapped => (*peak_speed / p.aftertouch_speed_max.max(0.001)).clamp(0.0, 1.0),
                     AftertouchMode::PeakMapped => {
                         let denom = (1.0 - p.press_threshold).max(0.001);
@@ -225,6 +268,16 @@ impl KeyMachine {
             }
         }
     }
+}
+
+/// Depth mode: minimum time between two pressure messages of one key (250 per second max).
+const DEPTH_PRESSURE_MIN_US: u64 = 4_000;
+/// Depth mode: smallest pressure change that is sent (out of 127); hides +-1 noise jitter.
+const DEPTH_PRESSURE_DEADBAND: u32 = 2;
+
+/// Travel above the press threshold, 0 at the threshold .. 1 at the bottom.
+fn depth_level(travel: f32, p: &KeyParams) -> f32 {
+    ((travel - p.press_threshold) / (1.0 - p.press_threshold).max(0.001)).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -253,6 +306,137 @@ mod tests {
 
     fn velocity_of(actions: &[(u64, Action)]) -> u8 {
         actions.iter().find_map(|(_, a)| match a { Action::NoteOn { velocity } => Some(*velocity), _ => None }).unwrap()
+    }
+
+    #[test]
+    fn aftertouch_mode_restrikes_while_lifting_like_wooting() {
+        // Wooting position-mode settings: 10 % threshold, release 0.12, depth velocity, 6 ms.
+        // Down to 90 %, then lift slowly to 0: a staircase of notes with falling velocity.
+        let p = KeyParams {
+            press_threshold: 0.10, release_delta: 0.12, velocity_window_us: 6_000,
+            velocity_source: VelocitySource::Depth, aftertouch_mode: AftertouchMode::PeakMapped,
+            ..KeyParams::default()
+        };
+        let mut m = KeyMachine::default();
+        let acts = run(&mut m, &p, 0, 1_000_000, |t| {
+            let ms = t as f32 / 1000.0;
+            if ms < 20.0 { 0.045 * ms } else if ms < 100.0 { 0.90 } else { (0.90 - 0.0012 * (ms - 100.0)).max(0.0) }
+        });
+        let vels: Vec<u8> = acts.iter().filter_map(|(_, a)| match a { Action::NoteOn { velocity } => Some(*velocity), _ => None }).collect();
+        assert!(vels.len() >= 5, "expected a staircase of notes, got {vels:?}");
+        assert!(vels.windows(2).skip(1).all(|w| w[1] < w[0]), "velocities should fall while lifting: {vels:?}");
+        assert!(matches!(acts.last(), Some((_, Action::NoteOff))), "{acts:?}");
+        assert!(!m.is_held());
+    }
+
+    #[test]
+    fn without_aftertouch_lifting_does_not_restrike() {
+        let p = KeyParams { press_threshold: 0.10, release_delta: 0.12, ..KeyParams::default() };
+        let mut m = KeyMachine::default();
+        let acts = run(&mut m, &p, 0, 1_000_000, |t| {
+            let ms = t as f32 / 1000.0;
+            if ms < 20.0 { 0.045 * ms } else if ms < 100.0 { 0.90 } else { (0.90 - 0.0012 * (ms - 100.0)).max(0.0) }
+        });
+        let ons = acts.iter().filter(|(_, a)| matches!(a, Action::NoteOn { .. })).count();
+        assert_eq!(ons, 1, "{acts:?}");
+    }
+
+    #[test]
+    fn depth_mode_pumps_one_continuous_note() {
+        // press to 90 %, pump between 30 % and 90 % three times, then let go
+        let p = KeyParams {
+            press_threshold: 0.10, release_delta: 0.12, aftertouch_mode: AftertouchMode::Depth,
+            ..KeyParams::default()
+        };
+        let mut m = KeyMachine::default();
+        let acts = run(&mut m, &p, 0, 700_000, |t| {
+            let ms = t as f32 / 1000.0;
+            if ms < 50.0 { 0.018 * ms }
+            else if ms < 650.0 { 0.60 + 0.30 * ((ms - 50.0) / 200.0 * std::f32::consts::TAU).cos() }
+            else { (0.90 - 0.05 * (ms - 650.0)).max(0.0) }
+        });
+        let ons = acts.iter().filter(|(_, a)| matches!(a, Action::NoteOn { .. })).count();
+        let offs: Vec<u64> = acts.iter().filter(|(_, a)| matches!(a, Action::NoteOff)).map(|(t, _)| *t).collect();
+        assert_eq!(ons, 1, "{acts:?}");
+        assert_eq!(offs.len(), 1, "{acts:?}");
+        assert!(offs[0] > 650_000, "note must only end on the final release");
+        let pr: Vec<u8> = acts.iter().filter_map(|(_, a)| match a { Action::Pressure { value } => Some(*value), _ => None }).collect();
+        let (lo, hi) = (*pr.iter().min().unwrap(), *pr.iter().max().unwrap());
+        assert!(hi >= 110 && lo <= 40, "pressure should swing with the pumping: {lo}..{hi}");
+        assert!(pr.windows(2).filter(|w| w[1] < w[0]).count() > 5 && pr.windows(2).filter(|w| w[1] > w[0]).count() > 5);
+    }
+
+    #[test]
+    fn depth_mode_pressure_rate_with_sensor_noise() {
+        // a key held still at 50 % with realistic rest noise (sigma 0.3 % of travel), 5 kHz scans
+        let p = KeyParams { press_threshold: 0.10, aftertouch_mode: AftertouchMode::Depth, ..KeyParams::default() };
+        let mut m = KeyMachine::default();
+        let mut seed: u32 = 12345;
+        let mut noise = move || {
+            let mut s = 0.0f32;
+            for _ in 0..12 { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); s += (seed >> 8) as f32 / 16_777_216.0; }
+            (s - 6.0) * 0.003
+        };
+        let mut t = 0u64; let mut n_pressure = 0;
+        while t < 1_200_000 {
+            let base = if t < 20_000 { t as f32 / 40_000.0 } else { 0.5 };
+            if let Some(Action::Pressure { .. }) = m.step(t, base + noise(), &p, &VelocityProfile::Linear) {
+                if t >= 200_000 { n_pressure += 1; }
+            }
+            t += 200;
+        }
+        eprintln!("pressure messages in 1 s of holding still: {n_pressure}");
+        assert!(n_pressure <= 20, "{n_pressure} aftertouch messages per second for one key held still");
+    }
+
+    #[test]
+    fn single_noise_spike_never_fires_a_note() {
+        // threshold 10 %, release_delta 12 % (Wooting-like); one scan at 12 % then rest
+        for mode in [AftertouchMode::Depth, AftertouchMode::PeakMapped, AftertouchMode::Off] {
+            let p = KeyParams {
+                press_threshold: 0.10, release_delta: 0.12, velocity_window_us: 6_000,
+                aftertouch_mode: mode, ..KeyParams::default()
+            };
+            let mut m = KeyMachine::default();
+            let acts = run(&mut m, &p, 0, 50_000, |t| if (10_000..10_200).contains(&t) { 0.12 } else { 0.0 });
+            assert!(acts.is_empty(), "{mode:?}: {acts:?}");
+        }
+    }
+
+    #[test]
+    fn depth_mode_note_starts_quiet_on_a_slow_press() {
+        let p = KeyParams { press_threshold: 0.10, aftertouch_mode: AftertouchMode::Depth, ..KeyParams::default() };
+        let mut m = KeyMachine::default();
+        let acts = run(&mut m, &p, 0, 100_000, |t| 0.01 * (t as f32 / 1000.0));   // 1 % per ms
+        assert!(velocity_of(&acts) <= 10, "{acts:?}");
+    }
+
+    #[test]
+    fn light_press_shallower_than_release_delta_still_releases() {
+        // press 10 %, release_delta 20 %: a press peaking at 17 % used to hang forever
+        let p = KeyParams { press_threshold: 0.10, release_delta: 0.20, ..KeyParams::default() };
+        let mut m = KeyMachine::default();
+        let acts = run(&mut m, &p, 0, 60_000, |t| {
+            let ms = t as f32 / 1000.0;
+            if ms < 10.0 { 0.017 * ms } else if ms < 30.0 { 0.17 } else { (0.17 - 0.017 * (ms - 30.0)).max(0.0) }
+        });
+        assert!(matches!(acts.first(), Some((_, Action::NoteOn { .. }))), "{acts:?}");
+        assert!(matches!(acts.last(), Some((_, Action::NoteOff))), "{acts:?}");
+        assert!(!m.is_held());
+    }
+
+    #[test]
+    fn hovering_light_press_does_not_retrigger() {
+        // finger wobble of +-5 % around 30 % travel with release_delta 20 %: one note only
+        let p = KeyParams { press_threshold: 0.10, release_delta: 0.20, ..KeyParams::default() };
+        let mut m = KeyMachine::default();
+        let acts = run(&mut m, &p, 0, 200_000, |t| {
+            let ms = t as f32 / 1000.0;
+            if ms < 10.0 { 0.03 * ms } else { 0.30 + 0.05 * (ms / 15.0).sin() }
+        });
+        let ons = acts.iter().filter(|(_, a)| matches!(a, Action::NoteOn { .. })).count();
+        assert_eq!(ons, 1, "{acts:?}");
+        assert!(m.is_held());
     }
 
     #[test]

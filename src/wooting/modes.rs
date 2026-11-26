@@ -9,6 +9,10 @@ pub enum AftertouchMode {
     SpeedMapped,
     PeakMapped,
     Off,
+    /// openxen only: one continuous note whose pressure follows the current key depth up
+    /// and down; the note ends only near the top (no re-strike). The Wooting backend treats
+    /// it like PeakMapped and never cycles into it.
+    Depth,
 }
 
 impl AftertouchMode {
@@ -17,6 +21,7 @@ impl AftertouchMode {
             AftertouchMode::SpeedMapped => "speed-mapped",
             AftertouchMode::PeakMapped => "peak-mapped",
             AftertouchMode::Off => "off",
+            AftertouchMode::Depth => "depth",
         }
     }
 
@@ -25,7 +30,7 @@ impl AftertouchMode {
         match self {
             AftertouchMode::SpeedMapped => AftertouchMode::PeakMapped,
             AftertouchMode::PeakMapped => AftertouchMode::Off,
-            AftertouchMode::Off => AftertouchMode::SpeedMapped,
+            AftertouchMode::Off | AftertouchMode::Depth => AftertouchMode::SpeedMapped,
         }
     }
 }

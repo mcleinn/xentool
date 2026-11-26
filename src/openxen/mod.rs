@@ -15,9 +15,9 @@
 //!   publishes MTS-ESP, HUD and TUI snapshots (TUI and HUD helpers shared with Wooting)
 //! - `led.rs`     — LED commands (frames, config, keepalive) and the LED worker thread
 //!   (like the Wooting RGB worker: batched, at most one frame per 16 ms per module)
-//! - `commands.rs` — CLI handlers (`serve`/`new`/`load` for `.ltn`, module listing)
+//! - `commands.rs` — CLI handlers (`serve`/`new`/`load` for `.otn`, module listing)
 //!
-//! Layouts are Lumatone-style `.ltn` files (`[Board0..4]`, `Key_n`/`Chan_n`/`Col_n` for
+//! Layouts are `.otn` files: Lumatone-style (`[Board0..4]`, `Key_n`/`Chan_n`/`Col_n` for
 //! n = 0..55, plus xentool's `Edo=` / `PitchOffset=` header), parsed with the `.wtn` parser.
 
 pub mod commands;

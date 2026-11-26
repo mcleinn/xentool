@@ -65,6 +65,8 @@ DEFAULTS: dict[str, float] = {
     "droneType":     0.0,    # 0=CombL, 1=Sine, 2=Off
     "pressSwellLo":   1.0,
     "pressSwellHi":   1.0,
+    "pressAmp":       0.0,    # aftertouch -> loudness up to hard-hit level (0 = off)
+    "droneGain":      1.0,
     # Y-axis effect
     "yMode":          5.0,    # 0=LPF, 1=Trem, 2=Leslie, 3=Chorus, 4=Vibrato, 5=Off
     "yRate":          5.0,

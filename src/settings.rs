@@ -29,9 +29,9 @@ pub struct Settings {
     /// Basename of the most recently active `.xtn` layout, persisted across runs.
     #[serde(default)]
     pub last_xtn: Option<String>,
-    /// Basename of the most recently active `.ltn` layout (openxen), persisted across runs.
-    #[serde(default)]
-    pub last_ltn: Option<String>,
+    /// Basename of the most recently active `.otn` layout (openxen), persisted across runs.
+    #[serde(default, alias = "last_ltn")]
+    pub last_otn: Option<String>,
 }
 
 // --- openxen section (experimental; tune on hardware) ---
@@ -89,6 +89,10 @@ pub struct OpenxenLedSettings {
     /// LEDs go off when xentool stops for this long (ms); 0 = never.
     #[serde(default = "ox_led_timeout")]
     pub timeout_ms: u16,
+    /// LEDs off after this many seconds without a key press (a note-on; rest noise does not
+    /// count); the next press wakes them. 0 = never. Same default as the Wooting backend.
+    #[serde(default = "ox_led_screensaver")]
+    pub screensaver_timeout_sec: u32,
 }
 
 impl Default for OpenxenLedSettings {
@@ -98,6 +102,7 @@ impl Default for OpenxenLedSettings {
             power_budget_ma: ox_led_budget(),
             highlight: ox_led_highlight(),
             timeout_ms: ox_led_timeout(),
+            screensaver_timeout_sec: ox_led_screensaver(),
         }
     }
 }
@@ -106,6 +111,7 @@ fn ox_led_brightness() -> u8 { 255 }
 fn ox_led_budget() -> u16 { 300 }
 fn ox_led_highlight() -> String { "FFFFFF".into() }
 fn ox_led_timeout() -> u16 { 2000 }
+fn ox_led_screensaver() -> u32 { 300 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenxenBoardSettings {
@@ -428,7 +434,7 @@ pub fn store_last_layout(kind: crate::layouts::LayoutKind, path: &std::path::Pat
     match kind {
         crate::layouts::LayoutKind::Wtn => settings.last_wtn = Some(name),
         crate::layouts::LayoutKind::Xtn => settings.last_xtn = Some(name),
-        crate::layouts::LayoutKind::Ltn => settings.last_ltn = Some(name),
+        crate::layouts::LayoutKind::Otn => settings.last_otn = Some(name),
     }
     let p = default_settings_path();
     if let Some(parent) = p.parent() {

@@ -80,7 +80,7 @@ pub fn arrow_flash_target(h: Hid) -> Option<Hid> {
 pub fn aftertouch_mode_color(mode: AftertouchMode, base_rgb: (u8, u8, u8)) -> (u8, u8, u8) {
     match mode {
         AftertouchMode::SpeedMapped => base_rgb,
-        AftertouchMode::PeakMapped => AFTERTOUCH_PEAK_RGB,
+        AftertouchMode::PeakMapped | AftertouchMode::Depth => AFTERTOUCH_PEAK_RGB,
         AftertouchMode::Off => AFTERTOUCH_OFF_RGB,
     }
 }

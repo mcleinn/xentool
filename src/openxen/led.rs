@@ -96,13 +96,55 @@ pub fn with_report_id(r: &[u8; REPORT_SIZE]) -> [u8; REPORT_SIZE + 1] {
 
 // --- scheduling (pure) ---
 
+/// Which overlay keys an `Overlay` update removes before it sets new ones.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum OverlayClear {
+    #[default]
+    None,
+    Keys(Vec<u8>),
+    All,
+}
+
 #[derive(Debug, Clone)]
 struct ModuleLeds {
+    /// Layout colours (what `Frame` and `Pixel` set).
+    base: Frame,
+    /// Overlay above the base (local API, e.g. a tutor's hints); None = base colour shows.
+    overlay: [Option<Rgb>; KEYS],
+    /// Brightness factor of the base right now (1.0 = unchanged). The modules are one
+    /// keyboard: the base dims on all of them while any of them shows an overlay.
+    dim: f32,
+    /// Some module shows an overlay (see `Scheduler::refresh`).
+    overlay_active: bool,
+    /// What the module should show: base, dimmed if asked, with the overlay on top.
     desired: Frame,
     frame_dirty: bool,
-    config_sent: bool,
+    sent_config: Option<LedConfig>,
     last_frame_at: Option<Instant>,
     last_send_at: Option<Instant>,
+}
+
+impl ModuleLeds {
+    fn has_overlay(&self) -> bool {
+        self.overlay.iter().any(|o| o.is_some())
+    }
+
+    fn recompose(&mut self) {
+        let dim = self.dim;
+        let scale = |v: u8| (v as f32 * dim).round() as u8;
+        let mut f = self.base;
+        for (px, over) in f.iter_mut().zip(self.overlay.iter()) {
+            match over {
+                Some(c) => *px = *c,
+                None if dim < 1.0 => *px = (scale(px.0), scale(px.1), scale(px.2)),
+                None => {}
+            }
+        }
+        if f != self.desired {
+            self.desired = f;
+            self.frame_dirty = true;
+        }
+    }
 }
 
 /// What to send to which module, given the desired state and the clock.
@@ -110,46 +152,92 @@ struct ModuleLeds {
 pub struct Scheduler {
     config: Option<LedConfig>,
     modules: HashMap<Arc<str>, ModuleLeds>,
+    /// Brightness factor of the base colours while an overlay is shown; None = unchanged.
+    dim_base: Option<f32>,
 }
 
 impl Scheduler {
     pub fn attach(&mut self, serial: Arc<str>) {
         self.modules.insert(serial, ModuleLeds {
+            base: [(0, 0, 0); KEYS],
+            overlay: [None; KEYS],
+            dim: 1.0,
+            overlay_active: false,
             desired: [(0, 0, 0); KEYS],
             frame_dirty: false,
-            config_sent: false,
+            sent_config: None,
             last_frame_at: None,
             last_send_at: None,
         });
+        self.refresh();
     }
 
     pub fn detach(&mut self, serial: &str) {
         self.modules.remove(serial);
+        self.refresh();
     }
 
-    pub fn set_config(&mut self, c: LedConfig) {
-        if self.config != Some(c) {
-            self.config = Some(c);
-            for m in self.modules.values_mut() {
-                m.config_sent = false;
-            }
+    /// The modules are one keyboard: while any of them shows an overlay, the base colours
+    /// dim and the press highlight is off on all of them, also on those without an
+    /// overlay key of their own.
+    fn refresh(&mut self) {
+        let active = self.modules.values().any(|m| m.has_overlay());
+        let dim = if active { self.dim_base.unwrap_or(1.0).clamp(0.0, 1.0) } else { 1.0 };
+        for m in self.modules.values_mut() {
+            m.overlay_active = active;
+            m.dim = dim;
+            m.recompose();
         }
     }
 
+    pub fn set_config(&mut self, c: LedConfig) {
+        self.config = Some(c);
+    }
+
+    /// The base (layout) colours; an overlay stays on top of them.
     pub fn set_frame(&mut self, serial: &str, frame: &Frame) {
         if let Some(m) = self.modules.get_mut(serial) {
-            if m.desired != *frame {
-                m.desired = *frame;
-                m.frame_dirty = true;
-            }
+            m.base = *frame;
+            m.recompose();
         }
     }
 
     pub fn set_pixel(&mut self, serial: &str, key: usize, rgb: Rgb) {
         if let Some(m) = self.modules.get_mut(serial) {
-            if key < KEYS && m.desired[key] != rgb {
-                m.desired[key] = rgb;
-                m.frame_dirty = true;
+            if key < KEYS {
+                m.base[key] = rgb;
+                m.recompose();
+            }
+        }
+    }
+
+    /// Change a module's overlay: first `clear`, then `set`. A cleared key shows its base
+    /// colour again; nothing else changes. `dim_base` (if given) applies to all modules and
+    /// is kept until changed.
+    pub fn set_overlay(&mut self, serial: &str, set: &[(u8, Rgb)], clear: &OverlayClear, dim_base: Option<f32>) {
+        if let Some(d) = dim_base {
+            self.dim_base = Some(d);
+        }
+        self.overlay_keys(serial, set, clear);
+        self.refresh();
+    }
+
+    fn overlay_keys(&mut self, serial: &str, set: &[(u8, Rgb)], clear: &OverlayClear) {
+        let Some(m) = self.modules.get_mut(serial) else { return };
+        match clear {
+            OverlayClear::None => {}
+            OverlayClear::All => m.overlay = [None; KEYS],
+            OverlayClear::Keys(keys) => {
+                for &k in keys {
+                    if let Some(o) = m.overlay.get_mut(k as usize) {
+                        *o = None;
+                    }
+                }
+            }
+        }
+        for &(k, rgb) in set {
+            if let Some(o) = m.overlay.get_mut(k as usize) {
+                *o = Some(rgb);
             }
         }
     }
@@ -157,14 +245,18 @@ impl Scheduler {
     /// Reports due now, per module (config first, then a changed frame at most every
     /// FLUSH_INTERVAL, else a keepalive every KEEPALIVE_INTERVAL). Nothing is sent before
     /// a config exists, so a module never runs on firmware defaults by accident.
+    ///
+    /// While an overlay is shown (on any module), the firmware press highlight is switched
+    /// off: the overlay's owner decides what a pressed key looks like.
     pub fn due(&mut self, now: Instant) -> Vec<(Arc<str>, Vec<[u8; REPORT_SIZE]>)> {
         let Some(cfg) = self.config else { return Vec::new() };
         let mut out = Vec::new();
         for (serial, m) in self.modules.iter_mut() {
             let mut reports = Vec::new();
-            if !m.config_sent {
-                reports.push(config_report(&cfg));
-                m.config_sent = true;
+            let effective = if m.overlay_active { LedConfig { highlight: None, ..cfg } } else { cfg };
+            if m.sent_config != Some(effective) {
+                reports.push(config_report(&effective));
+                m.sent_config = Some(effective);
             }
             let frame_ok = m.last_frame_at.is_none_or(|t| now.duration_since(t) >= FLUSH_INTERVAL);
             if m.frame_dirty && frame_ok {
@@ -186,7 +278,7 @@ impl Scheduler {
     /// A write failed: resend config and frame when the module comes back.
     pub fn invalidate(&mut self, serial: &str) {
         if let Some(m) = self.modules.get_mut(serial) {
-            m.config_sent = false;
+            m.sent_config = None;
             m.frame_dirty = true;
         }
     }
@@ -203,6 +295,8 @@ pub enum LedMsg {
     /// Single-key update (for HUD-driven indicators; not used by serve yet).
     #[allow(dead_code)]
     Pixel { serial: Arc<str>, key: u8, rgb: Rgb },
+    /// Overlay update from the local API (see `Scheduler::set_overlay`).
+    Overlay { serial: Arc<str>, set: Vec<(u8, Rgb)>, clear: OverlayClear, dim_base: Option<f32> },
 }
 
 pub fn spawn_worker(rx: Receiver<LedMsg>) -> thread::JoinHandle<()> {
@@ -224,6 +318,7 @@ pub fn spawn_worker(rx: Receiver<LedMsg>) -> thread::JoinHandle<()> {
                     Ok(LedMsg::Config(c)) => sched.set_config(c),
                     Ok(LedMsg::Frame { serial, frame }) => sched.set_frame(&serial, &frame),
                     Ok(LedMsg::Pixel { serial, key, rgb }) => sched.set_pixel(&serial, key as usize, rgb),
+                    Ok(LedMsg::Overlay { serial, set, clear, dim_base }) => sched.set_overlay(&serial, &set, &clear, dim_base),
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
@@ -338,5 +433,114 @@ mod tests {
         let d = s.due(t0 + Duration::from_millis(1));
         assert_eq!(d.len(), 2);
         assert!(d.iter().all(|(_, r)| r[0][0] == 0x11 && r[0][1] == 10));
+    }
+
+    /// Colour of `key` in the frame reports of one `due` entry.
+    fn shown(reports: &[[u8; REPORT_SIZE]], key: usize) -> Rgb {
+        let r = reports.iter().find(|r| r[0] == 0x10 && (r[2] as usize..r[2] as usize + r[3] as usize).contains(&key)).expect("key in frame");
+        let i = 4 + 3 * (key - r[2] as usize);
+        (r[i], r[i + 1], r[i + 2])
+    }
+
+    fn frames(d: &[(Arc<str>, Vec<[u8; REPORT_SIZE]>)]) -> &[[u8; REPORT_SIZE]] {
+        &d[0].1
+    }
+
+    #[test]
+    fn overlay_sits_on_base_and_clearing_one_key_restores_only_it() {
+        let mut s = Scheduler::default();
+        let t = |ms: u64| Instant::now() + Duration::from_millis(ms);
+        s.attach("A".into());
+        s.set_config(cfg());
+        s.set_frame("A", &[(10, 20, 30); KEYS]);
+        s.due(t(0));
+        s.set_overlay("A", &[(3, (255, 0, 0)), (4, (0, 255, 0))], &OverlayClear::None, None);
+        let d = s.due(t(20));
+        assert_eq!(shown(frames(&d), 3), (255, 0, 0));
+        assert_eq!(shown(frames(&d), 4), (0, 255, 0));
+        assert_eq!(shown(frames(&d), 5), (10, 20, 30));
+        // a layout repaint (or the screensaver) changes the base only
+        s.set_frame("A", &[(1, 1, 1); KEYS]);
+        let d = s.due(t(40));
+        assert_eq!(shown(frames(&d), 3), (255, 0, 0));
+        assert_eq!(shown(frames(&d), 5), (1, 1, 1));
+        // clearing key 3 shows its base colour again; key 4 keeps its overlay
+        s.set_overlay("A", &[], &OverlayClear::Keys(vec![3]), None);
+        let d = s.due(t(60));
+        assert_eq!(shown(frames(&d), 3), (1, 1, 1));
+        assert_eq!(shown(frames(&d), 4), (0, 255, 0));
+        s.set_overlay("A", &[], &OverlayClear::All, None);
+        let d = s.due(t(80));
+        assert_eq!(shown(frames(&d), 4), (1, 1, 1));
+        // out-of-range keys and unknown modules are ignored
+        s.set_overlay("A", &[(200, (9, 9, 9))], &OverlayClear::Keys(vec![99]), None);
+        s.set_overlay("nope", &[(1, (9, 9, 9))], &OverlayClear::All, None);
+        assert!(s.due(t(100)).is_empty());
+    }
+
+    #[test]
+    fn overlay_dims_base_and_switches_highlight_off() {
+        let mut s = Scheduler::default();
+        let t = |ms: u64| Instant::now() + Duration::from_millis(ms);
+        s.attach("A".into());
+        s.set_config(cfg());
+        s.set_frame("A", &[(100, 200, 50); KEYS]);
+        s.due(t(0));
+        s.set_overlay("A", &[(0, (255, 255, 255))], &OverlayClear::None, Some(0.25));
+        let d = s.due(t(20));
+        // config without highlight first (mode byte 0), then the frame
+        assert_eq!(&frames(&d)[0][..3], &[0x11, 200, 0]);
+        assert_eq!(shown(frames(&d), 0), (255, 255, 255));
+        assert_eq!(shown(frames(&d), 1), (25, 50, 13));
+        // overlay gone: full base brightness and the highlight is back
+        s.set_overlay("A", &[], &OverlayClear::All, None);
+        let d = s.due(t(40));
+        assert_eq!(&frames(&d)[0][..6], &[0x11, 200, 1, 1, 2, 3]);
+        assert_eq!(shown(frames(&d), 1), (100, 200, 50));
+    }
+
+    /// Several modules are one keyboard: an overlay key on one of them dims the layout
+    /// colours and switches the highlight off on all of them.
+    #[test]
+    fn overlay_on_one_module_dims_every_module() {
+        let mut s = Scheduler::default();
+        let t = |ms: u64| Instant::now() + Duration::from_millis(ms);
+        let of = |d: &[(Arc<str>, Vec<[u8; REPORT_SIZE]>)], serial: &str| -> Vec<[u8; REPORT_SIZE]> {
+            d.iter().find(|(s, _)| &**s == serial).map(|(_, r)| r.clone()).unwrap_or_default()
+        };
+        s.attach("A".into());
+        s.attach("B".into());
+        s.set_config(cfg());
+        s.set_frame("A", &[(100, 200, 50); KEYS]);
+        s.set_frame("B", &[(40, 80, 120); KEYS]);
+        s.due(t(0));
+        // what serve sends for a chord whose keys all lie on A
+        s.set_overlay("A", &[(0, (255, 255, 255))], &OverlayClear::None, Some(0.25));
+        s.set_overlay("B", &[], &OverlayClear::None, Some(0.25));
+        let d = s.due(t(20));
+        assert_eq!(shown(&of(&d, "A"), 1), (25, 50, 13));
+        assert_eq!(&of(&d, "B")[0][..3], &[0x11, 200, 0], "highlight off on B too");
+        assert_eq!(shown(&of(&d, "B"), 0), (10, 20, 30));
+        assert_eq!(shown(&of(&d, "B"), 55), (10, 20, 30));
+        // a module plugged in during the overlay joins dimmed
+        s.attach("C".into());
+        s.set_frame("C", &[(200, 200, 200); KEYS]);
+        let d = s.due(t(40));
+        assert_eq!(shown(&of(&d, "C"), 7), (50, 50, 50));
+        // the next chord lies on B only: A stays dimmed although its own overlay is gone
+        s.set_overlay("A", &[], &OverlayClear::Keys(vec![0]), None);
+        s.set_overlay("B", &[(5, (0, 255, 0))], &OverlayClear::None, None);
+        let d = s.due(t(60));
+        assert_eq!(shown(&of(&d, "A"), 0), (25, 50, 13));
+        assert_eq!(shown(&of(&d, "B"), 5), (0, 255, 0));
+        // lights off: every module back to full layout colours and highlight
+        for m in ["A", "B", "C"] {
+            s.set_overlay(m, &[], &OverlayClear::All, None);
+        }
+        let d = s.due(t(80));
+        assert_eq!(shown(&of(&d, "A"), 0), (100, 200, 50));
+        assert_eq!(shown(&of(&d, "B"), 5), (40, 80, 120));
+        assert_eq!(shown(&of(&d, "C"), 7), (200, 200, 200));
+        assert!(["A", "B", "C"].iter().all(|m| of(&d, m)[0][..3] == [0x11, 200, 1]));
     }
 }

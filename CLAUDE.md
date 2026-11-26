@@ -53,6 +53,13 @@ openxen backend (`src/openxen/`, experimental; not built on Android) — dispatc
 - `led.rs` — LED commands (openxen `docs/led-protocol.md`: 64-byte output reports — pixels staged + show, config, keepalive) and the LED worker (like the Wooting RGB worker: per-module desired frame, at most one frame per 16 ms, keepalive every 500 ms; `Scheduler` is pure and unit-tested). The module does gamma, press highlight, power budget and turns LEDs off when xentool stops. `serve` paints each board's `.ltn` colours on connect; `load` paints once with the timeout disabled. Settings: `openxen.leds` (brightness, power_budget_ma, highlight, timeout_ms).
 - `commands.rs` — `serve`/`new`/`load` for `.ltn`, module listing for `xentool list`.
 - Settings: `openxen` section in settings.json (thresholds in travel units, velocity window/source/speed max, aftertouch); `last_ltn` remembers the layout. `.ltn` = Lumatone layout (`[Board0..4]`, `Key_n/Chan_n/Col_n`, n = 0..55) plus xentool's `Edo=`/`PitchOffset=` header, parsed by the `.wtn` parser.
+- Overlay: `led::Scheduler` keeps per module a base frame (layout colours; `Frame`/`Pixel`) and an overlay (`Option<Rgb>` per key; `LedMsg::Overlay`) and sends base-with-overlay-on-top. Layout repaints and the screensaver touch only the base. While a module has an overlay, its config is sent without the press highlight.
+
+Local control API (`src/api.rs`, `serve --api`, openxen only so far, 127.0.0.1):
+- Backend-neutral shapes: `Setup` (geometry + layout joined per connected board: address, lattice position, pitch, colour, the six neighbour offsets from `Orientation`), `KeyEvent`, `Command::{Overlay, Notes}`. `ApiHub` is shared between the serve loop (publishes key events and board changes, receives commands over a channel) and the rouille threads (read state, queue commands).
+- Events are a numbered log fetched by long poll (`/api/events?after=N&wait_ms=M`, `Condvar`), not SSE: tiny_http sends chunked bodies in 8 KB chunks, so a stream would hold single key events back.
+- `openxen/serve.rs` `ApiLink`: emits events where `apply()` sends MIDI, applies overlay commands through the LED worker (and re-sends a board's overlay when it reconnects), sounds API notes on the normal MIDI output with their own release times, treats an API command as screensaver activity.
+- Client: the openxen repo's `host/tutor/` (MCP server); its `docs/tutor.md` has the endpoint table.
 
 Live HUD (`src/hud/`):
 - `state.rs` — unified `LiveState` wire shape (layout/mode/pressed/layout_pitches). Both backends submit it.

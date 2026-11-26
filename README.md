@@ -614,6 +614,27 @@ HUD's right-edge strip.
 
 ---
 
+## Local control API (`serve --api`, openxen backend)
+
+`xentool serve <file.otn> --api` (port `9098`, override with `--api-port`) lets another
+program on the same machine follow and steer a playing session. It was built for the
+openxen tutor, an MCP server through which a language model teaches at the keyboard, but it
+knows nothing about tutoring. It listens on `127.0.0.1` only.
+
+| Endpoint | |
+|---|---|
+| `GET /api/setup` | The keyboard as one keyfield: geometry and layout name, EDO, connected boards, the lattice offsets of the six neighbours, and for every playable key its address `(board, key)`, position in the shared hex lattice, pitch, frequency and layout colour |
+| `GET /api/keys/state` | Keys held now |
+| `GET /api/events?after=N&wait_ms=M` | Key presses and releases (with board and key, not only the pitch) and board changes numbered above `N`; waits up to `M` ms for the first one. Without `after`: the current number, to start "from now" |
+| `POST /api/leds/overlay` | `{"clear": "all" \| [[board, key], ..], "set": [{"board", "key", "rgb": "RRGGBB"}, ..], "dim_base": 0..1}`: colours above the layout colours. Clearing a key shows its layout colour again |
+| `POST /api/notes` | `{"on": [{"board", "key", "velocity", "ms"}], "off": [[board, key], ..]}`: sounds keys through the normal MIDI output, in the current tuning |
+| `POST /api/chords/name` | `{"edo", "pitch_classes": [..]}` → chord names per root (the HUD's chord list) |
+
+While an overlay is shown, the module's own press highlight is switched off and the LED
+screensaver is held off.
+
+---
+
 ## Technical reference
 
 ### Pitch-bend retuning (Exquis serve, default)

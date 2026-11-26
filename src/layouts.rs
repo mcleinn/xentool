@@ -19,8 +19,9 @@ use anyhow::{Context, Result};
 pub enum LayoutKind {
     Wtn,
     Xtn,
-    /// Lumatone-style layout for openxen modules (`src/openxen/`).
-    Ltn,
+    /// openxen layout (`.otn`, `src/openxen/`): Lumatone-style boards plus an `Edo=` header.
+    /// Plain Lumatone `.ltn` files are accepted too when they carry an `Edo=` line.
+    Otn,
 }
 
 impl LayoutKind {
@@ -29,7 +30,7 @@ impl LayoutKind {
         match ext.as_str() {
             "wtn" => Some(LayoutKind::Wtn),
             "xtn" => Some(LayoutKind::Xtn),
-            "ltn" => Some(LayoutKind::Ltn),
+            "otn" | "ltn" => Some(LayoutKind::Otn),
             _ => None,
         }
     }
@@ -38,7 +39,7 @@ impl LayoutKind {
         match self {
             LayoutKind::Wtn => "wtn",
             LayoutKind::Xtn => "xtn",
-            LayoutKind::Ltn => "ltn",
+            LayoutKind::Otn => "otn",
         }
     }
 
@@ -46,7 +47,7 @@ impl LayoutKind {
         match self {
             LayoutKind::Wtn => "wtn",
             LayoutKind::Xtn => "xtn",
-            LayoutKind::Ltn => "ltn",
+            LayoutKind::Otn => "otn",
         }
     }
 }
@@ -139,6 +140,14 @@ pub fn next(kind: LayoutKind, current: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn otn_and_ltn_are_openxen_layouts() {
+        assert_eq!(LayoutKind::from_extension(Path::new("edo53.otn")), Some(LayoutKind::Otn));
+        assert_eq!(LayoutKind::from_extension(Path::new("53ET-bosanquet.ltn")), Some(LayoutKind::Otn));
+        assert_eq!(resolve_layout_path(Path::new("edo53.otn")), PathBuf::from("otn").join("edo53.otn"));
+        assert_eq!(LayoutKind::from_extension(Path::new("edo53.xtn")), Some(LayoutKind::Xtn));
+    }
 
     #[test]
     fn bare_wtn_goes_to_wtn_dir() {

@@ -161,6 +161,18 @@ pub enum Commands {
         /// output remains active.
         #[arg(long)]
         jack_midi_mirror: bool,
+        /// Do not register as MTS-ESP master; only send MIDI. For a second xentool next to
+        /// one that already owns the tuning (e.g. a Wooting next to an openxen module, both
+        /// on the same loopMIDI port). Both layouts must use the same EDO and pitch offset.
+        #[arg(long)]
+        no_mts: bool,
+        /// Start the local control API (key events, LED overlay, demonstration notes) for a
+        /// program on this machine, e.g. the openxen tutor. Bound to 127.0.0.1. openxen only.
+        #[arg(long)]
+        api: bool,
+        /// Port of the local control API. Default: 9098.
+        #[arg(long, default_value_t = 9098)]
+        api_port: u16,
         /// Run without the terminal UI (plain log, Ctrl-C to quit). Saves a
         /// lot of CPU on small hosts such as Android/Termux. Exquis only.
         #[arg(long)]

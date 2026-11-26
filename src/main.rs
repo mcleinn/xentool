@@ -1,3 +1,5 @@
+#[cfg(not(target_os = "android"))]
+mod api;
 mod cli;
 mod config;
 mod edit;
@@ -66,9 +68,13 @@ fn main() -> Result<()> {
             osc_port,
             tune_supercollider,
             jack_midi_mirror,
+            no_mts,
+            api,
+            api_port,
             no_tui,
             color,
         } => {
+            mts::set_disabled(no_mts);
             let s = settings::load();
             let file = match file {
                 Some(f) => layouts::resolve_layout_path(&f),
@@ -79,15 +85,15 @@ fn main() -> Result<()> {
                     (None, Some(x)) => {
                         layouts::resolve_layout_path(std::path::Path::new(x))
                     }
-                    (None, None) if s.last_ltn.is_some() => {
-                        layouts::resolve_layout_path(std::path::Path::new(s.last_ltn.as_deref().unwrap()))
+                    (None, None) if s.last_otn.is_some() => {
+                        layouts::resolve_layout_path(std::path::Path::new(s.last_otn.as_deref().unwrap()))
                     }
                     (None, None) => {
                         bail!("no FILE argument and no persisted layout; run e.g. `xentool serve edo31.wtn` once");
                     }
                 },
             };
-            if is_ltn(&file) {
+            if is_otn(&file) {
                 #[cfg(target_os = "android")]
                 bail!("the openxen backend is not available on Android");
                 #[cfg(not(target_os = "android"))]
@@ -96,8 +102,10 @@ fn main() -> Result<()> {
                         eprintln!("xentool: --no-tui is not implemented for the openxen backend yet; running with the TUI");
                     }
                     let output = output.unwrap_or_else(|| cli::DEFAULT_OUTPUT_OPENXEN.to_string());
-                    openxen::commands::cmd_serve_ltn(file, output, hud, hud_port, xenharm_url, osc_port, tune_supercollider, &s.openxen)
+                    openxen::commands::cmd_serve_ltn(file, output, hud, hud_port, xenharm_url, osc_port, tune_supercollider, api.then_some(api_port), &s.openxen)
                 }
+            } else if api {
+                bail!("--api is only available for the openxen backend (.otn layouts) so far");
             } else if is_wtn(&file) {
                 if no_tui {
                     eprintln!("xentool: --no-tui is not implemented for the Wooting backend yet; running with the TUI");
@@ -120,7 +128,7 @@ fn main() -> Result<()> {
             force,
         } => {
             let file = layouts::resolve_layout_path(&file);
-            if is_ltn(&file) {
+            if is_otn(&file) {
                 #[cfg(target_os = "android")]
                 bail!("the openxen backend is not available on Android");
                 #[cfg(not(target_os = "android"))]
@@ -133,7 +141,7 @@ fn main() -> Result<()> {
         }
         Commands::Load { file, color } => {
             let file = layouts::resolve_layout_path(&file);
-            if is_ltn(&file) {
+            if is_otn(&file) {
                 #[cfg(target_os = "android")]
                 bail!("the openxen backend is not available on Android");
                 #[cfg(not(target_os = "android"))]
@@ -246,10 +254,11 @@ fn needs_exquis_device(args: &[String]) -> bool {
 
 /// Returns true if the file looks like a Wooting layout file (routes to the
 /// Wooting backend). All other cases fall back to the Exquis backend.
-fn is_ltn(p: &std::path::Path) -> bool {
+/// openxen layout: `.otn` (or a Lumatone `.ltn` with an `Edo=` line).
+fn is_otn(p: &std::path::Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("ltn"))
+        .map(|e| e.eq_ignore_ascii_case("otn") || e.eq_ignore_ascii_case("ltn"))
         .unwrap_or(false)
 }
 

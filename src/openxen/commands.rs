@@ -1,4 +1,4 @@
-//! CLI command handlers for the openxen backend (dispatched for `.ltn` files).
+//! CLI command handlers for the openxen backend (dispatched for `.otn` files, and `.ltn` with an `Edo=` line).
 
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
@@ -7,7 +7,7 @@ use crate::openxen::{hid, led, serve};
 use crate::settings::OpenxenSettings;
 use crate::wooting::wtn::{new_blank, write_wtn};
 
-/// `xentool new FILE.ltn` — blank Lumatone-style layout (56 keys per board, default 5 boards).
+/// `xentool new FILE.otn` — blank Lumatone-style layout (56 keys per board, default 5 boards).
 pub fn cmd_new_ltn(file: PathBuf, edo: i32, boards: u8, pitch_offset: i32, force: bool) -> Result<()> {
     if edo < 1 {
         bail!("edo must be >= 1");
@@ -29,7 +29,7 @@ pub fn cmd_new_ltn(file: PathBuf, edo: i32, boards: u8, pitch_offset: i32, force
     Ok(())
 }
 
-/// `xentool load FILE.ltn` — paint each attached module with its board's layout colours and
+/// `xentool load FILE.otn` — paint each attached module with its board's layout colours and
 /// exit. The host timeout is disabled (0) so the colours stay until the module is reset; a
 /// later `serve` takes over again.
 pub fn cmd_load_ltn(file: PathBuf, settings: &OpenxenSettings) -> Result<()> {
@@ -68,9 +68,10 @@ pub fn cmd_serve_ltn(
     xenharm_url: String,
     osc_port: u16,
     tune_supercollider: bool,
+    api_port: Option<u16>,
     settings: &OpenxenSettings,
 ) -> Result<()> {
-    serve::cmd_serve_ltn(file, midi_port, hud, hud_port, xenharm_url, osc_port, tune_supercollider, settings)
+    serve::cmd_serve_ltn(file, midi_port, hud, hud_port, xenharm_url, osc_port, tune_supercollider, api_port, settings)
 }
 
 /// Pretty-print attached openxen modules for `xentool list`. Empty when hidapi cannot be

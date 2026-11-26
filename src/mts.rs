@@ -10,15 +10,43 @@ pub fn edo_freq_hz(divisions: i32, pitch_index: i32) -> f64 {
     C0_HZ * 2f64.powf(pitch_index as f64 / divisions as f64)
 }
 
-/// Runtime-loaded MTS-ESP master.
-pub struct MtsMaster {
-    _lib: Library,
+static DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `serve --no-mts`: do not register as MTS-ESP master; `register()` then returns a no-op
+/// master. Lets a second xentool (e.g. Wooting next to an openxen module) send MIDI into the
+/// same synth while the first instance owns the tuning (both layouts must share EDO and
+/// pitch offset, since the synth only sees the first instance's tables).
+pub fn set_disabled(disabled: bool) {
+    DISABLED.store(disabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_disabled() -> bool {
+    DISABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Short status for log lines.
+pub fn status_text() -> &'static str {
+    if is_disabled() { "MTS-ESP off (--no-mts)" } else { "MTS-ESP master registered" }
+}
+
+struct Registered {
+    lib: Library,
     deregister: unsafe extern "C" fn(),
 }
 
+/// Runtime-loaded MTS-ESP master (or a no-op stand-in with `--no-mts`).
+pub struct MtsMaster {
+    inner: Option<Registered>,
+}
+
 impl MtsMaster {
-    /// Load LIBMTS.dll and register as MTS-ESP master.
+    /// Load LIBMTS.dll and register as MTS-ESP master. With `set_disabled(true)` nothing is
+    /// loaded and every method is a no-op.
     pub fn register() -> Result<Self> {
+        if is_disabled() {
+            eprintln!("mts: disabled (--no-mts), not registering a master");
+            return Ok(Self { inner: None });
+        }
         let dll_path = find_libmts()?;
         eprintln!("mts: loading {}", dll_path.display());
         let lib = unsafe { Library::new(&dll_path) }
@@ -75,17 +103,15 @@ impl MtsMaster {
                 .context("MTS_DeregisterMaster not found")?
         };
 
-        Ok(Self {
-            _lib: lib,
-            deregister,
-        })
+        Ok(Self { inner: Some(Registered { lib, deregister }) })
     }
 
     pub fn set_scale_name(&self, name: &str) -> Result<()> {
         let s = CString::new(name).context("scale name contains NUL")?;
+        let Some(r) = &self.inner else { return Ok(()) };
         unsafe {
-            let func: Symbol<unsafe extern "C" fn(*const i8)> = self
-                ._lib
+            let func: Symbol<unsafe extern "C" fn(*const i8)> = r
+                .lib
                 .get(b"MTS_SetScaleName\0")
                 .context("MTS_SetScaleName not found")?;
             func(s.as_bytes_with_nul().as_ptr() as *const i8);
@@ -94,8 +120,9 @@ impl MtsMaster {
     }
 
     pub fn get_num_clients(&self) -> i32 {
+        let Some(r) = &self.inner else { return -1 };
         unsafe {
-            if let Ok(func) = self._lib.get::<unsafe extern "C" fn() -> i32>(b"MTS_GetNumClients\0")
+            if let Ok(func) = r.lib.get::<unsafe extern "C" fn() -> i32>(b"MTS_GetNumClients\0")
             {
                 func()
             } else {
@@ -105,9 +132,10 @@ impl MtsMaster {
     }
 
     pub fn set_note_tunings(&self, freqs: &[f64; 128]) -> Result<()> {
+        let Some(r) = &self.inner else { return Ok(()) };
         unsafe {
-            let func: Symbol<unsafe extern "C" fn(*const f64)> = self
-                ._lib
+            let func: Symbol<unsafe extern "C" fn(*const f64)> = r
+                .lib
                 .get(b"MTS_SetNoteTunings\0")
                 .context("MTS_SetNoteTunings not found")?;
             func(freqs.as_ptr());
@@ -120,9 +148,10 @@ impl MtsMaster {
     /// pitches on different channels. Pair with `MTS_SetMultiChannel(true, ch)`
     /// (called for all 16 channels in `register`).
     pub fn set_multi_channel_note_tunings(&self, channel: u8, freqs: &[f64; 128]) -> Result<()> {
+        let Some(r) = &self.inner else { return Ok(()) };
         unsafe {
-            let func: Symbol<unsafe extern "C" fn(*const f64, i8)> = self
-                ._lib
+            let func: Symbol<unsafe extern "C" fn(*const f64, i8)> = r
+                .lib
                 .get(b"MTS_SetMultiChannelNoteTunings\0")
                 .context("MTS_SetMultiChannelNoteTunings not found")?;
             func(freqs.as_ptr(), channel as i8);
@@ -133,7 +162,9 @@ impl MtsMaster {
 
 impl Drop for MtsMaster {
     fn drop(&mut self) {
-        unsafe { (self.deregister)() };
+        if let Some(r) = &self.inner {
+            unsafe { (r.deregister)() };
+        }
     }
 }
 
@@ -166,6 +197,19 @@ fn find_libmts() -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_master_is_a_no_op() {
+        set_disabled(true);
+        let m = MtsMaster::register().expect("disabled register never fails");
+        assert!(m.set_scale_name("31-EDO").is_ok());
+        assert!(m.set_note_tunings(&[440.0; 128]).is_ok());
+        assert!(m.set_multi_channel_note_tunings(3, &[440.0; 128]).is_ok());
+        assert_eq!(m.get_num_clients(), -1);
+        assert_eq!(status_text(), "MTS-ESP off (--no-mts)");
+        drop(m);
+        set_disabled(false);
+    }
 
     #[test]
     fn edo_12_c0_is_base() {
