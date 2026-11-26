@@ -167,7 +167,8 @@ pub enum Commands {
         #[arg(long)]
         no_mts: bool,
         /// Start the local control API (key events, LED overlay, demonstration notes) for a
-        /// program on this machine, e.g. the openxen tutor. Bound to 127.0.0.1. openxen only.
+        /// program on this machine, e.g. the openxen tutor. Bound to 127.0.0.1. openxen and
+        /// Wooting backends.
         #[arg(long)]
         api: bool,
         /// Port of the local control API. Default: 9098.

@@ -38,7 +38,9 @@ Exquis backend (`src/exquis/`):
 
 Wooting backend (`src/wooting/`):
 - `commands.rs` — Wooting CLI command handlers (`cmd_serve_wtn`, `cmd_load_wtn`, `cmd_new_wtn`, `list_wootings`).
-- `serve.rs` — 1 kHz hot loop polling the Analog SDK, emitting MIDI + RGB + MTS-ESP. Time-critical: no I/O inside the loop.
+- `serve.rs` — 1 kHz hot loop polling the Analog SDK, emitting MIDI + RGB + MTS-ESP. Time-critical: no I/O inside the loop. Layout switches (layout key or API) are deferred to one place after the scan (`pending_layout`).
+- `overlay.rs` — `Compositor` (pure, unit-tested) inside the RGB worker: every `RgbCmd` paint is the base colour of its LED, the API's overlay (`OverlayFrame`, sent whole on a second channel) lies on top, `dim_base` dims the base of all keyboards while any overlay key is set. Painting code in `serve.rs`/`control_bar.rs` needs no knowledge of it.
+- `api_link.rs` — the serve loop's side of the local API: lattice positions per `.wtn` cell index (`board_positions`; the tuples in `src/geometry.rs` number keys 0..52 instead), `LedTable` (cell → LED for upright/turned), setup with octave hold applied, `ApiLink` (key events, commands, overlay re-resolved when keyboards change).
 - `ui.rs` — terminal UI for `serve` on Wooting (snapshots pushed every ~40 ms over a bounded crossbeam channel; runs on its own thread so the hot loop is never blocked).
 - `hud_ctx.rs` — Wooting HUD ctx (mutable on layout cycle) and helpers that turn `KeyState::Held` into `LiveState`.
 - `analog.rs`, `rgb.rs` — Wooting Analog and RGB SDK wrappers (libloading at runtime).
@@ -55,10 +57,12 @@ openxen backend (`src/openxen/`, experimental; not built on Android) — dispatc
 - Settings: `openxen` section in settings.json (thresholds in travel units, velocity window/source/speed max, aftertouch); `last_ltn` remembers the layout. `.ltn` = Lumatone layout (`[Board0..4]`, `Key_n/Chan_n/Col_n`, n = 0..55) plus xentool's `Edo=`/`PitchOffset=` header, parsed by the `.wtn` parser.
 - Overlay: `led::Scheduler` keeps per module a base frame (layout colours; `Frame`/`Pixel`) and an overlay (`Option<Rgb>` per key; `LedMsg::Overlay`) and sends base-with-overlay-on-top. Layout repaints and the screensaver touch only the base. While a module has an overlay, its config is sent without the press highlight.
 
-Local control API (`src/api.rs`, `serve --api`, openxen only so far, 127.0.0.1):
+Local control API (`src/api.rs`, `serve --api`, openxen and Wooting, 127.0.0.1):
 - Backend-neutral shapes: `Setup` (geometry + layout joined per connected board: address, lattice position, pitch, colour, the six neighbour offsets from `Orientation`), `KeyEvent`, `Command::{Overlay, Notes}`. `ApiHub` is shared between the serve loop (publishes key events and board changes, receives commands over a channel) and the rouille threads (read state, queue commands).
 - Events are a numbered log fetched by long poll (`/api/events?after=N&wait_ms=M`, `Condvar`), not SSE: tiny_http sends chunked bodies in 8 KB chunks, so a stream would hold single key events back.
 - `openxen/serve.rs` `ApiLink`: emits events where `apply()` sends MIDI, applies overlay commands through the LED worker (and re-sends a board's overlay when it reconnects), sounds API notes on the normal MIDI output with their own release times, treats an API command as screensaver activity.
+- Shared serve-side state in `api.rs`: `TimedNotes` (API notes and raw MIDI notes with their release times, sent through a `MidiSink`), `OverlayState` (overlay by key address, kept for reconnects).
+- Wooting (`wooting/api_link.rs`, `wooting/overlay.rs`): key = `.wtn` cell index; a pair of keyboards is one lattice (first one turned), a lone one is upright; setup pitches include each keyboard's octave hold and a `setup` event follows every toggle and every hotplug change; events are emitted where the note-on/off is sent (`emit_peak_note_ons`, release paths); `--api` for an Exquis layout is refused in `main.rs`.
 - Client: the openxen repo's `host/tutor/` (MCP server); its `docs/tutor.md` has the endpoint table.
 
 Live HUD (`src/hud/`):

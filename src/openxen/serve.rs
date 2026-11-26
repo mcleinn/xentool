@@ -63,6 +63,12 @@ impl MidiOut {
     }
 }
 
+impl crate::api::MidiSink for MidiOut {
+    fn send3(&mut self, msg: [u8; 3]) {
+        self.send(msg);
+    }
+}
+
 // --- settings -> key parameters ---
 
 pub fn key_params(s: &OpenxenSettings) -> KeyParams {
@@ -233,14 +239,11 @@ struct ApiLink {
     pitch_offset: i32,
     started: Instant,
     /// The overlay as last asked for, so a module that reconnects gets it back.
-    overlay: HashMap<(u8, u8), led::Rgb>,
-    dim_base: Option<f32>,
-    /// Notes sounded for the API: (board, key) -> (channel, note, when to release).
-    notes: HashMap<(u8, u8), (u8, u8, Option<Instant>)>,
+    overlay: crate::api::OverlayState,
+    /// Notes sounded for the API, released by xentool.
+    notes: crate::api::TimedNotes,
     /// A layout the API asked to switch to; the serve loop takes it.
     layout_request: Option<String>,
-    /// Raw MIDI notes sounding for the API (clicks, percussion): (channel 0..15, note, when to release).
-    raw_notes: Vec<(u8, u8, Instant)>,
 }
 
 impl ApiLink {
@@ -252,7 +255,7 @@ impl ApiLink {
         hub.set_layout_file(file);
         let port = crate::api::spawn(hub.clone(), port)?;
         eprintln!("xentool API: listening on http://127.0.0.1:{port}/ (this machine only)");
-        Ok(Self { hub, rx, geometry, cells, layout, edo, pitch_offset: wtn.pitch_offset, started, overlay: HashMap::new(), dim_base: None, notes: HashMap::new(), layout_request: None, raw_notes: Vec::new() })
+        Ok(Self { hub, rx, geometry, cells, layout, edo, pitch_offset: wtn.pitch_offset, started, overlay: Default::default(), notes: Default::default(), layout_request: None })
     }
 
     /// Another layout was loaded: new key description, and the overlay (which belonged to
@@ -262,7 +265,7 @@ impl ApiLink {
         self.edo = edo;
         self.pitch_offset = wtn.pitch_offset;
         self.layout = layout;
-        self.overlay.clear();
+        self.overlay.keys.clear();
         for serial in boards.values() {
             let _ = led_tx.send(LedMsg::Overlay { serial: serial.clone(), set: Vec::new(), clear: led::OverlayClear::All, dim_base: None });
         }
@@ -287,14 +290,14 @@ impl ApiLink {
     }
 
     fn overlay_active(&self) -> bool {
-        !self.overlay.is_empty()
+        self.overlay.is_active()
     }
 
     /// Send a board its part of the overlay (after it connected).
     fn resend_overlay(&self, board: u8, serial: &Arc<str>, led_tx: &crossbeam_channel::Sender<LedMsg>) {
-        let set: Vec<(u8, led::Rgb)> = self.overlay.iter().filter(|((b, _), _)| *b == board).map(|((_, k), rgb)| (*k, *rgb)).collect();
-        if !set.is_empty() || self.dim_base.is_some() {
-            let _ = led_tx.send(LedMsg::Overlay { serial: serial.clone(), set, clear: led::OverlayClear::All, dim_base: self.dim_base });
+        let set: Vec<(u8, led::Rgb)> = self.overlay.keys.iter().filter(|((b, _), _)| *b == board).map(|((_, k), rgb)| (*k, *rgb)).collect();
+        if !set.is_empty() || self.overlay.dim_base.is_some() {
+            let _ = led_tx.send(LedMsg::Overlay { serial: serial.clone(), set, clear: led::OverlayClear::All, dim_base: self.overlay.dim_base });
         }
     }
 
@@ -306,23 +309,7 @@ impl ApiLink {
             any = true;
             match cmd {
                 Command::Overlay { clear, set, dim_base } => {
-                    match &clear {
-                        OverlayClear::None => {}
-                        OverlayClear::All => self.overlay.clear(),
-                        OverlayClear::Keys(keys) => {
-                            for k in keys {
-                                self.overlay.remove(k);
-                            }
-                        }
-                    }
-                    for &(b, k, rgb) in &set {
-                        if (k as usize) < led::KEYS {
-                            self.overlay.insert((b, k), rgb);
-                        }
-                    }
-                    if dim_base.is_some() {
-                        self.dim_base = dim_base;
-                    }
+                    self.overlay.apply(&clear, &set, dim_base, |_, k| (k as usize) < led::KEYS);
                     for (&b, serial) in boards.iter() {
                         let board_set: Vec<(u8, led::Rgb)> = set.iter().filter(|s| s.0 == b).map(|s| (s.1, s.2)).collect();
                         let board_clear = match &clear {
@@ -335,27 +322,23 @@ impl ApiLink {
                 }
                 Command::Layout { name } => self.layout_request = Some(name),
                 Command::Midi { notes } => {
-                    for n in notes {
-                        let ch = n.channel.saturating_sub(1).min(15);
-                        midi.send([0x90 | ch, n.note & 0x7F, n.velocity & 0x7F]);
-                        self.raw_notes.push((ch, n.note & 0x7F, Instant::now() + Duration::from_millis(n.ms as u64)));
+                    for n in &notes {
+                        self.notes.raw_on(n, Instant::now(), midi);
                     }
                 }
                 Command::Notes { on, off } => {
                     for key in off {
-                        self.note_off(key, midi);
+                        self.notes.key_off(key, midi);
                     }
                     for n in on {
                         let key = (n.board, n.key);
-                        self.note_off(key, midi);
+                        self.notes.key_off(key, midi);
                         if !boards.contains_key(&n.board) {
                             continue;
                         }
                         if let Some(cell) = wtn.cell(n.board, n.key as usize).filter(|c| c.chan != 0) {
                             let ch = cell.chan.saturating_sub(1).min(15);
-                            midi.send([0x90 | ch, cell.key & 0x7F, n.velocity & 0x7F]);
-                            let until = n.ms.map(|ms| Instant::now() + Duration::from_millis(ms as u64));
-                            self.notes.insert(key, (ch, cell.key & 0x7F, until));
+                            self.notes.key_on(key, ch, cell.key, n.velocity, n.ms, Instant::now(), midi);
                         }
                     }
                 }
@@ -364,39 +347,13 @@ impl ApiLink {
         any
     }
 
-    fn note_off(&mut self, key: (u8, u8), midi: &mut MidiOut) {
-        if let Some((ch, note, _)) = self.notes.remove(&key) {
-            midi.send([0x80 | ch, note, 0]);
-        }
-    }
-
     /// Release notes whose length has passed.
     fn tick_notes(&mut self, now: Instant, midi: &mut MidiOut) {
-        if !self.raw_notes.is_empty() {
-            self.raw_notes.retain(|&(ch, note, until)| {
-                if now >= until {
-                    midi.send([0x80 | ch, note, 0]);
-                }
-                now < until
-            });
-        }
-        if self.notes.is_empty() {
-            return;
-        }
-        let due: Vec<(u8, u8)> = self.notes.iter().filter(|(_, v)| v.2.is_some_and(|t| now >= t)).map(|(k, _)| *k).collect();
-        for key in due {
-            self.note_off(key, midi);
-        }
+        self.notes.tick(now, midi);
     }
 
     fn release_all(&mut self, midi: &mut MidiOut) {
-        for (ch, note, _) in self.raw_notes.drain(..) {
-            midi.send([0x80 | ch, note, 0]);
-        }
-        let keys: Vec<(u8, u8)> = self.notes.keys().copied().collect();
-        for key in keys {
-            self.note_off(key, midi);
-        }
+        self.notes.release_all(midi);
     }
 }
 

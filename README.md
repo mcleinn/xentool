@@ -614,9 +614,9 @@ HUD's right-edge strip.
 
 ---
 
-## Local control API (`serve --api`, openxen backend)
+## Local control API (`serve --api`, openxen and Wooting backends)
 
-`xentool serve <file.otn> --api` (port `9098`, override with `--api-port`) lets another
+`xentool serve <file.otn or file.wtn> --api` (port `9098`, override with `--api-port`) lets another
 program on the same machine follow and steer a playing session. It was built for the
 openxen tutor, an MCP server through which a language model teaches at the keyboard, but it
 knows nothing about tutoring. It listens on `127.0.0.1` only.
@@ -628,10 +628,41 @@ knows nothing about tutoring. It listens on `127.0.0.1` only.
 | `GET /api/events?after=N&wait_ms=M` | Key presses and releases (with board and key, not only the pitch) and board changes numbered above `N`; waits up to `M` ms for the first one. Without `after`: the current number, to start "from now" |
 | `POST /api/leds/overlay` | `{"clear": "all" \| [[board, key], ..], "set": [{"board", "key", "rgb": "RRGGBB"}, ..], "dim_base": 0..1}`: colours above the layout colours. Clearing a key shows its layout colour again |
 | `POST /api/notes` | `{"on": [{"board", "key", "velocity", "ms"}], "off": [[board, key], ..]}`: sounds keys through the normal MIDI output, in the current tuning |
+| `POST /api/midi` | `{"notes": [{"channel": 1..16, "note", "velocity", "ms"}]}`: notes sent as they are, outside the layout (metronome clicks on channel 10) |
+| `GET /api/layouts` | Layout files next to the served one (name = file name without extension, EDO), the current one, and how the last switch went |
+| `POST /api/layout` | `{"name"}`: load another of these layouts while serving (tuning, colours and `/api/setup` follow; a `setup` event is sent) |
 | `POST /api/chords/name` | `{"edo", "pitch_classes": [..]}` → chord names per root (the HUD's chord list) |
 
 While an overlay is shown, the module's own press highlight is switched off and the LED
 screensaver is held off.
+
+### Wooting keyboards
+
+`xentool serve edo31.wtn --api` gives the same endpoints and JSON for Wooting keyboards
+(`"backend": "wooting"`, `"geometry": "wooting"`). What is particular to them:
+
+- **Key addresses.** `board` is the `.wtn` board, `key` the `.wtn` cell index (`Key_N`,
+  row × 14 + column), as in the layout file and the editor. Only keys that play a note are
+  listed: 53 per keyboard at most; the control bar, the arrow keys and cells without a
+  channel are not part of the description and send no events.
+- **One keyfield per pair.** Two keyboards (the first turned by 180°, above the second)
+  share one lattice, so intervals continue from one to the other. A single keyboard is
+  upright. With three or four keyboards the second pair lies to the right of the first with
+  a gap; its place is a convention, not a measured position. When a keyboard is plugged in
+  or pulled out, the others may change their orientation and board number; a `setup` event
+  tells clients to read `/api/setup` again.
+- **Octave hold.** The Space key of a keyboard raises all its notes by one octave. The
+  pitches in `/api/setup` are the ones that sound with the holds as they are; every toggle
+  sends a `setup` event (same `boards`, new pitches), and `/api/notes` sounds a key with the
+  hold applied, like a press. Key events carry the pitch that was actually sent.
+- **Overlay.** Overlay colours lie above everything `serve` paints itself (layout colours,
+  the white flash of a pressed key, layout changes); clearing a key shows what `serve`
+  painted there last. `dim_base` dims all other LEDs of all keyboards, including the control
+  bar and the flash of pressed keys, which stays visible on keys without an overlay colour
+  (the openxen modules switch their highlight off instead). While an overlay is shown the
+  screensaver stays off; an API command wakes the LEDs without swallowing a key press.
+- **Layouts.** `/api/layout` does what the layout key (ContextMenu) does; that key in turn
+  now also updates `/api/setup`. The list comes from the folder of the layout being served.
 
 ---
 

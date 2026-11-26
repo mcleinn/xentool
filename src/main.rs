@@ -1,4 +1,3 @@
-#[cfg(not(target_os = "android"))]
 mod api;
 mod cli;
 mod config;
@@ -104,15 +103,16 @@ fn main() -> Result<()> {
                     let output = output.unwrap_or_else(|| cli::DEFAULT_OUTPUT_OPENXEN.to_string());
                     openxen::commands::cmd_serve_ltn(file, output, hud, hud_port, xenharm_url, osc_port, tune_supercollider, api.then_some(api_port), &s.openxen)
                 }
-            } else if api {
-                bail!("--api is only available for the openxen backend (.otn layouts) so far");
             } else if is_wtn(&file) {
                 if no_tui {
                     eprintln!("xentool: --no-tui is not implemented for the Wooting backend yet; running with the TUI");
                 }
                 let output = output.unwrap_or_else(|| cli::DEFAULT_OUTPUT_WOOTING.to_string());
-                wooting::commands::cmd_serve_wtn(file, output, hud, hud_port, xenharm_url, osc_port, tune_supercollider, jack_midi_mirror, &s.wooting)
+                wooting::commands::cmd_serve_wtn(file, output, hud, hud_port, xenharm_url, osc_port, tune_supercollider, jack_midi_mirror, api.then_some(api_port), &s.wooting)
             } else {
+                if api {
+                    bail!("--api is available for the openxen (.otn) and Wooting (.wtn) backends, not for the Exquis backend yet");
+                }
                 let output = output.unwrap_or_else(|| cli::DEFAULT_OUTPUT_EXQUIS.to_string());
                 if jack_midi_mirror {
                     eprintln!("xentool: ignoring --jack-midi-mirror for Exquis; it only applies to the Wooting backend");
