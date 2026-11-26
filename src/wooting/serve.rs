@@ -6,7 +6,6 @@
 
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
-#[cfg(not(target_os = "linux"))]
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
