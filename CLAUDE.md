@@ -27,7 +27,9 @@ Top-level (cross-device or pure tooling):
 - `src/xtn.rs` — .xtn layout file parser (INI-style, compatible with .wtn/.ltn).
 
 Exquis backend (`src/exquis/`):
-- `commands.rs` — Exquis CLI command handlers (`cmd_dev`, `cmd_pads`, `cmd_pad_set`, `cmd_serve`, `cmd_new`, `cmd_load`, `cmd_control`, `cmd_highlight`, `cmd_midi`).
+- `commands.rs` — Exquis CLI command handlers (`cmd_dev`, `cmd_pads`, `cmd_pad_set`, `cmd_serve`, `cmd_new`, `cmd_load`, `cmd_control`, `cmd_highlight`, `cmd_midi`). In `cmd_serve` every paint goes through `Painter`: `Direct` (straight to the device) or, with `--api`, `Worker` (the LED worker of `overlay.rs`).
+- `api_link.rs` — the serve loops' side of the local API (`serve --api`): setup from the `.xtn` layout (pitches taken from `TuningState::from_board`, octave shifts included), key events from pad notes (`midi_in`), `/api/notes` through the board's `TuningState` on a free MPE member channel, overlay and layout commands. Held in an `Rc<RefCell<..>>` like the HUD ctx, shared by the UI loop and the control-button closure.
+- `overlay.rs` — pad LEDs with the API's overlay: `LedState` (pure, unit-tested; layout colours per board composed with the overlay through `wooting::overlay::Compositor`, one 61-pad snapshot per changed board, at most one per board every 50 ms) and the LED worker thread that sends them.
 - `proto.rs` — Exquis SysEx message builders, Color type, zone bitmasks, control ID mapping.
 - `midi.rs` — MIDI device discovery and I/O.
 - `usb.rs` — USB enumeration for Exquis hardware.
@@ -57,12 +59,13 @@ openxen backend (`src/openxen/`, experimental; not built on Android) — dispatc
 - Settings: `openxen` section in settings.json (thresholds in travel units, velocity window/source/speed max, aftertouch); `last_ltn` remembers the layout. `.ltn` = Lumatone layout (`[Board0..4]`, `Key_n/Chan_n/Col_n`, n = 0..55) plus xentool's `Edo=`/`PitchOffset=` header, parsed by the `.wtn` parser.
 - Overlay: `led::Scheduler` keeps per module a base frame (layout colours; `Frame`/`Pixel`) and an overlay (`Option<Rgb>` per key; `LedMsg::Overlay`) and sends base-with-overlay-on-top. Layout repaints and the screensaver touch only the base. While a module has an overlay, its config is sent without the press highlight.
 
-Local control API (`src/api.rs`, `serve --api`, openxen and Wooting, 127.0.0.1):
+Local control API (`src/api.rs`, `serve --api`, all backends, 127.0.0.1):
 - Backend-neutral shapes: `Setup` (geometry + layout joined per connected board: address, lattice position, pitch, colour, the six neighbour offsets from `Orientation`), `KeyEvent`, `Command::{Overlay, Notes}`. `ApiHub` is shared between the serve loop (publishes key events and board changes, receives commands over a channel) and the rouille threads (read state, queue commands).
 - Events are a numbered log fetched by long poll (`/api/events?after=N&wait_ms=M`, `Condvar`), not SSE: tiny_http sends chunked bodies in 8 KB chunks, so a stream would hold single key events back.
 - `openxen/serve.rs` `ApiLink`: emits events where `apply()` sends MIDI, applies overlay commands through the LED worker (and re-sends a board's overlay when it reconnects), sounds API notes on the normal MIDI output with their own release times, treats an API command as screensaver activity.
 - Shared serve-side state in `api.rs`: `TimedNotes` (API notes and raw MIDI notes with their release times, sent through a `MidiSink`), `OverlayState` (overlay by key address, kept for reconnects).
-- Wooting (`wooting/api_link.rs`, `wooting/overlay.rs`): key = `.wtn` cell index; a pair of keyboards is one lattice (first one turned), a lone one is upright; setup pitches include each keyboard's octave hold and a `setup` event follows every toggle and every hotplug change; events are emitted where the note-on/off is sent (`emit_peak_note_ons`, release paths); `--api` for an Exquis layout is refused in `main.rs`.
+- Wooting (`wooting/api_link.rs`, `wooting/overlay.rs`): key = `.wtn` cell index; a pair of keyboards is one lattice (first one turned), a lone one is upright; setup pitches include each keyboard's octave hold and a `setup` event follows every toggle and every hotplug change; events are emitted where the note-on/off is sent (`emit_peak_note_ons`, release paths).
+- Exquis (`exquis/api_link.rs`, `exquis/overlay.rs`): key = pad 0..60, board = the N of `boardN` (non-contiguous when a pinned board is absent; the geometry's board stride places each board, a missing one leaves a gap). The two UI loops (`run_serve_ui`, `run_serve_retune_ui`) take an `Option<ApiHandle>`: per MIDI message `midi_in` (pad note → key event), per pass `apply_commands` + `tick_notes`; with `--api` they poll every 2 ms instead of 40. A layout the API asks for runs the Settings-button code of the control closure, called with `API_DEVICE`. Octave shift → `set_shift` → `setup` event. With `--mts-esp` there is no MIDI output: `ApiHub::refuse` makes `/api/notes` and `/api/midi` answer 501. Boards are enumerated once at start (no hotplug).
 - Client: the openxen repo's `host/tutor/` (MCP server); its `docs/tutor.md` has the endpoint table.
 
 Live HUD (`src/hud/`):

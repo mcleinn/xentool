@@ -614,10 +614,12 @@ HUD's right-edge strip.
 
 ---
 
-## Local control API (`serve --api`, openxen and Wooting backends)
+## Local control API (`serve --api`, all backends)
 
-`xentool serve <file.otn or file.wtn> --api` (port `9098`, override with `--api-port`) lets another
-program on the same machine follow and steer a playing session. It was built for the
+`xentool serve <file.otn, file.wtn or file.xtn> --api` (port `9098`, override with `--api-port`) lets another
+program on the same machine follow and steer a playing session. The endpoints and the JSON
+are the same for every keyboard; a client reads `/api/setup` and needs to know nothing else
+about the device. It was built for the
 openxen tutor, an MCP server through which a language model teaches at the keyboard, but it
 knows nothing about tutoring. It listens on `127.0.0.1` only.
 
@@ -663,6 +665,59 @@ screensaver is held off.
   screensaver stays off; an API command wakes the LEDs without swallowing a key press.
 - **Layouts.** `/api/layout` does what the layout key (ContextMenu) does; that key in turn
   now also updates `/api/setup`. The list comes from the folder of the layout being served.
+
+### Exquis
+
+`xentool serve edo31.xtn --api` gives the same endpoints and JSON for Exquis boards
+(`"backend": "exquis"`, `"geometry": "exquis"`). What is particular to them:
+
+- **Key addresses.** `board` is the number of the board (`board3` in `devices.json` =
+  `[Board3]` in the `.xtn` file = 3), `key` the pad, 0..60 (pad 0 bottom left, rows counted
+  away from the player). Boards keep their pinned number, so the connected ones can be
+  0, 1 and 3. All 61 pads of a board that has a section in the layout are listed; a pad the
+  file leaves out sounds as channel 1 with its pad number as key and is listed black. A
+  connected board without a section is silent: it is in `boards` and has no keys.
+- **One keyfield.** Board N lies N times `(-1, 11)` from board 0 in the lattice (one row
+  lower, one board width to the right, the geometry `xentool geometry exquis` shows), so
+  neighbouring boards continue each other's rows. A board that is not connected leaves its
+  place empty: with boards 0, 1 and 3 no pad of board 3 is a neighbour of a pad of board 1.
+- **Octave shift.** The Up/Down buttons shift a board by octaves. The pitches in
+  `/api/setup` are the ones that sound with the shifts as they are; every shift sends a
+  `setup` event (same `boards`, new pitches) and `/api/notes` sounds a pad shifted, like a
+  press. A release event carries the pitch its press had. Loading a layout sets all shifts
+  back to 0.
+- **Colours.** The pads have 7 bit per colour channel. `color` in `/api/setup` is the pad's
+  colour scaled back to 8 bit, which can differ from the file's value by one. Overlay
+  colours get the colour correction of `serve` (`--gamma`, `--saturation`, `--rgb-gain`)
+  like the layout colours.
+- **Events.** A pad's note-on and note-off, with its velocity. The pad's X, Y and Z
+  movement is not part of the API.
+- **Notes (pitch-bend mode).** The output is an MPE stream: every note has a channel of
+  its own, bent to its pitch. An `/api/notes` note takes a member channel (2..15, from 15
+  downwards) that no pad of any board and no other API note is using, and goes through the
+  board's retuning like a touch of that pad: the same bend, the same note. If a touch
+  arrives on that channel while the API note sounds, the API note ends first. With all
+  fourteen channels held by fingers the note is dropped. `/api/midi` notes go out as they
+  are; channel 10 is one of the MPE member channels here, so a click on it is played by
+  the MPE synth with whatever bend that channel last had. A metronome is better served by
+  a channel the synth treats separately, if it has one.
+- **With `--mts-esp`** xentool has no MIDI output (the synth listens to the Exquis
+  itself): `/api/notes` and `/api/midi` answer `501` with the reason. Everything else works.
+- **Overlay.** The Exquis takes pad colours only as a snapshot of all 61 pads of a board
+  (262 bytes; single pads cannot be set without losing MPE). So an overlay change costs one
+  snapshot for every board whose pads change: one board for a hint, all boards when
+  `dim_base` starts or ends. A board gets at most one snapshot every 50 ms; changes in
+  between are merged, and a board that already shows the right colours gets nothing.
+  Layout changes repaint under the overlay; loading another layout clears the overlay.
+  When `serve` ends, the pads show the layout colours again (not after a kill).
+- **Layouts.** `/api/layout` does what the Settings button does, with the layout named
+  instead of the next one; the Settings button in turn now also updates `/api/setup`. The
+  list comes from the folder of the layout being served.
+- **Boards come and go only at start.** The Exquis backend looks for boards once, when
+  `serve` starts; `boards` does not change while it runs.
+- **Timing.** With `--api` the serve loop looks for API commands every 2 ms (without
+  it the loop wakes for MIDI messages and otherwise every 40 ms). Demonstration notes and
+  clicks start and end with that resolution.
 
 ---
 
