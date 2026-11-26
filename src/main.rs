@@ -1,4 +1,3 @@
-#[cfg(not(target_os = "android"))]
 mod api;
 mod cli;
 mod config;
