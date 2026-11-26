@@ -110,14 +110,11 @@ fn main() -> Result<()> {
                 let output = output.unwrap_or_else(|| cli::DEFAULT_OUTPUT_WOOTING.to_string());
                 wooting::commands::cmd_serve_wtn(file, output, hud, hud_port, xenharm_url, osc_port, tune_supercollider, jack_midi_mirror, api.then_some(api_port), &s.wooting)
             } else {
-                if api {
-                    bail!("--api is available for the openxen (.otn) and Wooting (.wtn) backends, not for the Exquis backend yet");
-                }
                 let output = output.unwrap_or_else(|| cli::DEFAULT_OUTPUT_EXQUIS.to_string());
                 if jack_midi_mirror {
                     eprintln!("xentool: ignoring --jack-midi-mirror for Exquis; it only applies to the Wooting backend");
                 }
-                cmd_serve(file, pb_range, x_gain, output, mts_esp, hud, hud_port, xenharm_url, osc_port, tune_supercollider, color.to_correction()?, no_tui)
+                cmd_serve(file, pb_range, x_gain, output, mts_esp, hud, hud_port, xenharm_url, osc_port, tune_supercollider, color.to_correction()?, no_tui, api.then_some(api_port))
             }
         }
         Commands::New {

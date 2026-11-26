@@ -16,12 +16,20 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
+use crate::exquis::api_link::{API_DEVICE, ApiHandle, NoMidi};
 use crate::exquis::midi::{DeviceSelection, ExquisDevice, send_to_outputs};
 use crate::exquis::mpe::{ControlStateTracker, Decoder, EventBuffer, InputMessage, TouchSummary};
 use crate::exquis::proto::{self, Color, control_display_name};
 use crate::exquis::tuning::TuningState;
 use crate::logging::JsonlLogger;
 use crate::mts::MtsMaster;
+
+/// How long the serve loops wait for a MIDI message before they look after the rest.
+/// With the local API (`--api`) its commands and timed notes are served once per pass, so
+/// the wait is short; the terminal is still redrawn every 40 ms only.
+fn serve_poll(api: bool) -> Duration {
+    Duration::from_millis(if api { 2 } else { 40 })
+}
 
 /// Shared state displayed in the serve TUI's Controls panel.
 ///
@@ -301,6 +309,7 @@ pub fn run_serve_ui(
     display: DisplayHandle,
     hud_ctx: Option<crate::exquis::hud_ctx::HudExquisHandle>,
     hud_url: Option<String>,
+    api: Option<ApiHandle>,
     on_control_edge: &mut dyn FnMut(usize, u8, bool) -> Result<()>,
 ) -> Result<()> {
     enable_raw_mode()?;
@@ -323,11 +332,16 @@ pub fn run_serve_ui(
     // channel went idle so the last event is always on screen.
     let mut last_draw = std::time::Instant::now() - Duration::from_millis(40);
     let mut idle = false;
+    let poll = serve_poll(api.is_some());
     let result = loop {
         idle = false;
-        match rx.recv_timeout(Duration::from_millis(40)) {
+        match rx.recv_timeout(poll) {
             Ok(message) => {
                 controls.apply(&message.bytes);
+                // Local API: pad notes become key events.
+                if let Some(a) = &api {
+                    a.borrow_mut().midi_in(message.device_number, &message.bytes, &mut NoMidi);
+                }
                 // Per-device edge detection for Settings/Up/Down (CC 100/107/106 on channel 16).
                 if message.bytes.len() == 3
                     && (message.bytes[0] & 0xF0) == 0xB0
@@ -363,6 +377,14 @@ pub fn run_serve_ui(
             Err(RecvTimeoutError::Disconnected) => break Ok(()),
         }
 
+        // Local API: overlay and layout commands (there is no MIDI output in this mode).
+        if let Some(a) = &api {
+            let wants_layout = a.borrow_mut().apply_commands(None, std::time::Instant::now(), &mut NoMidi);
+            if wants_layout {
+                let _ = on_control_edge(API_DEVICE, 100, true);
+            }
+        }
+
         // HUD watchdog (see `run_serve_retune_ui` for rationale).
         if let Some(h) = &hud_ctx {
             if last_hud_submit.elapsed() >= Duration::from_millis(250) {
@@ -381,7 +403,7 @@ pub fn run_serve_ui(
             events_title.push_str(&format!(" | HUD: {url} (h)"));
         }
 
-        if !idle && last_draw.elapsed() < Duration::from_millis(40) {
+        if (!idle || api.is_some()) && last_draw.elapsed() < Duration::from_millis(40) {
             continue;
         }
         last_draw = std::time::Instant::now();
@@ -488,6 +510,7 @@ pub fn run_serve_retune_ui(
     display: DisplayHandle,
     hud_ctx: Option<crate::exquis::hud_ctx::HudExquisHandle>,
     hud_url: Option<String>,
+    api: Option<ApiHandle>,
     on_control_edge: RetuneCycleCallback,
     headless: bool,
 ) -> Result<()> {
@@ -524,11 +547,17 @@ pub fn run_serve_retune_ui(
     // channel went idle so the last event is always on screen.
     let mut last_draw = std::time::Instant::now() - Duration::from_millis(40);
     let mut idle = false;
+    let poll = serve_poll(api.is_some());
     let result = loop {
         idle = false;
-        match rx.recv_timeout(Duration::from_millis(40)) {
+        match rx.recv_timeout(poll) {
             Ok(message) => {
                 controls.apply(&message.bytes);
+                // Local API: pad notes become key events. Before the retuning, so that a
+                // demonstration note on this channel ends before the touch starts.
+                if let Some(a) = &api {
+                    a.borrow_mut().midi_in(message.device_number, &message.bytes, output);
+                }
                 // Per-device edge detection for Settings/Up/Down.
                 if message.bytes.len() == 3
                     && (message.bytes[0] & 0xF0) == 0xB0
@@ -592,6 +621,20 @@ pub fn run_serve_retune_ui(
             Err(RecvTimeoutError::Disconnected) => break Ok(()),
         }
 
+        // Local API: commands queued by the HTTP threads, and notes whose time is up.
+        if let Some(a) = &api {
+            let now = std::time::Instant::now();
+            let wants_layout = {
+                let mut link = a.borrow_mut();
+                let wants = link.apply_commands(Some(&mut *tunings), now, output);
+                link.tick_notes(now, output);
+                wants
+            };
+            if wants_layout {
+                let _ = on_control_edge(API_DEVICE, 100, true, tunings, output);
+            }
+        }
+
         // Watchdog: re-submit ~every 250 ms when HUD is enabled so the SSE
         // stream stays fresh during long MIDI-idle periods (and so any state
         // discrepancy gets overwritten by the next tick).
@@ -614,7 +657,7 @@ pub fn run_serve_retune_ui(
         let Some(terminal) = terminal.as_mut() else {
             continue;
         };
-        if !idle && last_draw.elapsed() < Duration::from_millis(40) {
+        if (!idle || api.is_some()) && last_draw.elapsed() < Duration::from_millis(40) {
             continue;
         }
         last_draw = std::time::Instant::now();
@@ -696,6 +739,9 @@ pub fn run_serve_retune_ui(
         }
     };
 
+    if let Some(a) = &api {
+        a.borrow_mut().release_all(output);
+    }
     if let Some(mut terminal) = terminal {
         disable_raw_mode()?;
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;

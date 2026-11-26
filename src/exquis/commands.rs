@@ -13,6 +13,8 @@ use std::sync::mpsc;
 use crate::cli::{self, DevAction, PadsCommands};
 use crate::config;
 use crate::exquis;
+use crate::exquis::api_link::{self, API_DEVICE, ApiHandle, ApiLink};
+use crate::exquis::overlay::{LedMsg, LedState, LedWorker};
 use crate::exquis::midi::{DeviceSelection, list_devices, open_inputs, send_to_outputs};
 use crate::exquis::mpe::DecodedEvent;
 use crate::exquis::proto::{Color, NamedZone};
@@ -229,6 +231,76 @@ fn paint_all_ctrl_buttons_for_board(
     }
 }
 
+/// Where `serve` paints the pads and the control buttons.
+///
+/// Without the local API: straight to the device, as `serve` always did. With `--api`:
+/// through the LED worker (`exquis/overlay.rs`), which lays the API's overlay over the pad
+/// colours and keeps the messages to a board in order.
+enum Painter {
+    Direct,
+    Worker {
+        tx: crossbeam_channel::Sender<LedMsg>,
+        /// (device number, board).
+        boards: Vec<(usize, u8)>,
+    },
+}
+
+impl Painter {
+    fn board_of(boards: &[(usize, u8)], device: &crate::exquis::midi::ExquisDevice) -> Option<u8> {
+        boards.iter().find(|(number, _)| *number == device.number).map(|(_, board)| *board)
+    }
+
+    /// Colour of a control button. Assumes dev mode is active on the device.
+    fn ctrl(&self, device: &crate::exquis::midi::ExquisDevice, cc: u8, color: exquis::proto::Color) {
+        match self {
+            Painter::Direct => paint_ctrl_button(device, cc, color),
+            Painter::Worker { tx, boards } => {
+                if let Some(board) = Self::board_of(boards, device) {
+                    let _ = tx.send(LedMsg::Ctrl { board, cc, color });
+                }
+            }
+        }
+    }
+
+    /// The pad colours of a newly loaded layout (note = pad id): dev mode for the non-pad
+    /// zones, the snapshot, and dev mode again, which the snapshot may have ended.
+    fn pads(&self, device: &crate::exquis::midi::ExquisDevice, pads: &[(u8, Color); 61]) {
+        match self {
+            Painter::Direct => {
+                let dev_mode = exquis::proto::enter_dev_mode(exquis::proto::DEV_MASK_NO_PADS);
+                let _ = send_to_outputs(&[device.clone()], DeviceSelection::All, &dev_mode);
+                let _ = send_to_outputs(
+                    &[device.clone()],
+                    DeviceSelection::All,
+                    &exquis::proto::snapshot_set_pads(pads),
+                );
+                let _ = send_to_outputs(&[device.clone()], DeviceSelection::All, &dev_mode);
+            }
+            Painter::Worker { tx, boards } => {
+                if let Some(board) = Self::board_of(boards, device) {
+                    let _ = tx.send(LedMsg::Pads { board, colors: Box::new(pads.map(|p| p.1)) });
+                }
+            }
+        }
+    }
+}
+
+/// The layout to load next: the one the local API named, else the next file in `./xtn`.
+fn next_layout(api_target: Option<std::path::PathBuf>, current: &std::path::Path) -> Result<std::path::PathBuf> {
+    match api_target {
+        Some(path) => Ok(path),
+        None => layouts::next(layouts::LayoutKind::Xtn, current),
+    }
+}
+
+/// A layout change did not happen; the old layout stays. `GET /api/layouts` shows why.
+fn layout_cycle_failed(api: &Option<ApiHandle>, error: String) {
+    eprintln!("layout cycle: {error}");
+    if let Some(a) = api {
+        a.borrow().layout_failed(error);
+    }
+}
+
 /// Returns true if applying `new_shift` octaves to this board would keep every
 /// mapped pad's 12-TET MIDI note inside [0, 127]. Empty boards trivially pass.
 fn shift_in_range(bl: &xtn::BoardLayout, edo: i32, pitch_offset: i32, new_shift: i32) -> bool {
@@ -297,6 +369,7 @@ pub fn cmd_serve(
     tune_supercollider: bool,
     correction: exquis::proto::ColorCorrection,
     no_tui: bool,
+    api_port: Option<u16>,
 ) -> Result<()> {
     let mut current_layout_path: std::path::PathBuf = file.clone();
     let layout = xtn::parse_xtn(&file)?;
@@ -441,6 +514,51 @@ pub fn cmd_serve(
         println!("[{}] {} colors set (MPE preserved)", board.device.number, board.board_name);
     }
 
+    // Local API (`--api`): key events out; LED overlay, notes and layout switches in.
+    // With it every paint from here on goes through the LED worker, which lays the
+    // overlay over the layout colours. `_led_worker` ends the worker when serve returns.
+    let mut painter = Painter::Direct;
+    let mut api: Option<ApiHandle> = None;
+    let mut _led_worker: Option<LedWorker> = None;
+    if let Some(port) = api_port {
+        let infos = api_link::board_infos(&boards);
+        // what the boards show now: the layout colours sent above, the buttons in their
+        // base colours (painted below, before the serve loop starts)
+        let mut leds = LedState::new();
+        let mut led_devices = Vec::new();
+        for board in &boards {
+            let Some(idx) = api_link::board_index(&board.board_name) else {
+                continue;
+            };
+            if let Some(bl) = layout.boards.get(&board.board_name) {
+                leds.seed_pads(idx, &api_link::pad_colors(bl, &correction));
+            }
+            for cc in [100u8, 106, 107] {
+                leds.set_ctrl(idx, cc, ctrl_base_color(cc, 0));
+            }
+            led_devices.push((idx, board.device.clone()));
+        }
+        let worker = LedWorker::spawn(leds, led_devices).context("starting the LED worker")?;
+        let link = ApiLink::new(
+            &layout,
+            edo,
+            &file,
+            &infos,
+            !mts_esp,
+            correction,
+            worker.sender(),
+            std::time::Instant::now(),
+        );
+        let bound = link.listen(port)?;
+        println!("API: http://127.0.0.1:{bound}/api/setup (this machine only)");
+        painter = Painter::Worker {
+            tx: worker.sender(),
+            boards: infos.iter().map(|b| (b.device, b.board)).collect(),
+        };
+        api = Some(link.into_handle());
+        _led_worker = Some(worker);
+    }
+
     // Build per-board tuning states
     let mut board_tunings: std::collections::HashMap<usize, exquis::tuning::TuningState> =
         std::collections::HashMap::new();
@@ -501,93 +619,104 @@ pub fn cmd_serve(
         for b in &boards_cyc {
             paint_all_ctrl_buttons_for_board(&b.device, 0);
         }
-        exquis::ui::run_serve_ui(rx, &master, &scale_name, display, hud_ctx_for_ui.clone(), hud_url.clone(), &mut |device_number, cc, pressed| {
-            let Some(board_idx) = boards_cyc.iter().position(|b| b.device.number == device_number)
-            else {
-                return Ok(());
+        exquis::ui::run_serve_ui(rx, &master, &scale_name, display, hud_ctx_for_ui.clone(), hud_url.clone(), api.clone(), &mut |device_number, cc, pressed| {
+            // A layout the local API asked for arrives as a press of no board's button.
+            let api_target = if device_number == API_DEVICE {
+                match api.as_ref().and_then(|a| a.borrow_mut().take_layout_request()) {
+                    Some(path) => Some(path),
+                    None => return Ok(()),
+                }
+            } else {
+                None
             };
-            let board = boards_cyc[board_idx].clone();
+            if api_target.is_none() {
+                let Some(board_idx) = boards_cyc.iter().position(|b| b.device.number == device_number)
+                else {
+                    return Ok(());
+                };
+                let board = boards_cyc[board_idx].clone();
 
-            // RELEASE EDGE: restore the pressed button to its current base color
-            // (which reflects the board's current octave_shift).
-            if !pressed {
-                let cur = current_shifts.get(&device_number).copied().unwrap_or(0);
-                paint_ctrl_button(&board.device, cc, ctrl_base_color(cc, cur));
-                return Ok(());
-            }
-
-            // PRESS EDGE.
-            // Flash the pressed button white first. For non-cycling cases we
-            // leave it white for the hold duration; the release branch above
-            // restores the base.
-            paint_ctrl_button(&board.device, cc, pressed_color());
-
-            match cc {
-                107 | 106 => {
-                    let shift_before = current_shifts.get(&device_number).copied().unwrap_or(0);
-                    let delta: i32 = if cc == 107 { 1 } else { -1 };
-                    let new_shift = shift_before + delta;
-                    let bl = match current_layout.boards.get(&board.board_name) {
-                        Some(b) => b,
-                        None => return Ok(()),
-                    };
-                    if !shift_in_range(
-                        bl,
-                        current_edo,
-                        current_layout.pitch_offset,
-                        new_shift,
-                    ) {
-                        // Clamp: keep shift, no retune.
-                        return Ok(());
-                    }
-                    current_shifts.insert(device_number, new_shift);
-                    display_for_cb
-                        .borrow_mut()
-                        .shifts
-                        .insert(device_number, new_shift);
-                    let freqs = rebuild_mts_table(
-                        &current_layout,
-                        &boards_cyc,
-                        current_edo,
-                        current_layout.pitch_offset,
-                        &current_shifts,
-                    );
-                    let _ = master.set_note_tunings(&freqs);
-                    let other_cc: u8 = if cc == 107 { 106 } else { 107 };
-                    paint_ctrl_button(
-                        &board.device,
-                        other_cc,
-                        ctrl_base_color(other_cc, new_shift),
-                    );
+                // RELEASE EDGE: restore the pressed button to its current base color
+                // (which reflects the board's current octave_shift).
+                if !pressed {
+                    let cur = current_shifts.get(&device_number).copied().unwrap_or(0);
+                    painter.ctrl(&board.device, cc, ctrl_base_color(cc, cur));
                     return Ok(());
                 }
-                100 => {
-                    // Cycle layout. (Settings button.)
+
+                // PRESS EDGE.
+                // Flash the pressed button white first. For non-cycling cases we
+                // leave it white for the hold duration; the release branch above
+                // restores the base.
+                painter.ctrl(&board.device, cc, pressed_color());
+
+                match cc {
+                    107 | 106 => {
+                        let shift_before = current_shifts.get(&device_number).copied().unwrap_or(0);
+                        let delta: i32 = if cc == 107 { 1 } else { -1 };
+                        let new_shift = shift_before + delta;
+                        let bl = match current_layout.boards.get(&board.board_name) {
+                            Some(b) => b,
+                            None => return Ok(()),
+                        };
+                        if !shift_in_range(
+                            bl,
+                            current_edo,
+                            current_layout.pitch_offset,
+                            new_shift,
+                        ) {
+                            // Clamp: keep shift, no retune.
+                            return Ok(());
+                        }
+                        current_shifts.insert(device_number, new_shift);
+                        display_for_cb
+                            .borrow_mut()
+                            .shifts
+                            .insert(device_number, new_shift);
+                        if let Some(a) = &api {
+                            a.borrow_mut().set_shift(device_number, new_shift);
+                        }
+                        let freqs = rebuild_mts_table(
+                            &current_layout,
+                            &boards_cyc,
+                            current_edo,
+                            current_layout.pitch_offset,
+                            &current_shifts,
+                        );
+                        let _ = master.set_note_tunings(&freqs);
+                        let other_cc: u8 = if cc == 107 { 106 } else { 107 };
+                        painter.ctrl(
+                            &board.device,
+                            other_cc,
+                            ctrl_base_color(other_cc, new_shift),
+                        );
+                        return Ok(());
+                    }
+                    100 => {
+                        // Cycle layout. (Settings button.)
+                    }
+                    _ => return Ok(()),
                 }
-                _ => return Ok(()),
             }
             // --- Settings pressed: cycle to next .xtn ---
-            let new_path = match layouts::next(
-                layouts::LayoutKind::Xtn,
-                &current_layout_path,
-            ) {
+            let new_path = match next_layout(api_target, &current_layout_path) {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("layout cycle: {e:#}");
+                    layout_cycle_failed(&api, format!("{e:#}"));
                     return Ok(());
                 }
             };
             let new_layout = match xtn::parse_xtn(&new_path) {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("layout cycle: {e:#}");
+                    layout_cycle_failed(&api, format!("{e:#}"));
                     return Ok(());
                 }
             };
             let new_edo = match new_layout.edo {
                 Some(e) => e,
                 None => {
-                    eprintln!("layout cycle: {} has no Edo=", new_path.display());
+                    layout_cycle_failed(&api, format!("{} has no Edo=", new_path.display()));
                     return Ok(());
                 }
             };
@@ -617,6 +746,9 @@ pub fn cmd_serve(
             );
             let _ = master.set_scale_name(&format!("{new_edo}-EDO"));
             let _ = master.set_note_tunings(&freqs);
+            if let Some(a) = &api {
+                a.borrow_mut().set_layout(&new_layout, new_edo, &new_path);
+            }
             // Repaint pads.
             for b in &boards_cyc {
                 let Some(bl) = new_layout.boards.get(&b.board_name) else {
@@ -632,32 +764,18 @@ pub fn cmd_serve(
                         .corrected(&correction_cyc);
                     pads[i as usize] = (i, c);
                 }
-                let _ = send_to_outputs(
-                    &[b.device.clone()],
-                    DeviceSelection::All,
-                    &exquis::proto::enter_dev_mode(exquis::proto::DEV_MASK_NO_PADS),
-                );
-                let _ = send_to_outputs(
-                    &[b.device.clone()],
-                    DeviceSelection::All,
-                    &exquis::proto::snapshot_set_pads(&pads),
-                );
+                painter.pads(&b.device, &pads);
                 // After the snapshot we may have lost dev mode — re-enter and
                 // restore Up/Down for this board to the new (shift=0) base.
                 // Leave Settings alone on the pressed board: it stays white
                 // while the user holds the key; the release branch restores
                 // its base color.
-                let _ = send_to_outputs(
-                    &[b.device.clone()],
-                    DeviceSelection::All,
-                    &exquis::proto::enter_dev_mode(exquis::proto::DEV_MASK_NO_PADS),
-                );
-                paint_ctrl_button(&b.device, 106, ctrl_base_color(106, 0));
-                paint_ctrl_button(&b.device, 107, ctrl_base_color(107, 0));
+                painter.ctrl(&b.device, 106, ctrl_base_color(106, 0));
+                painter.ctrl(&b.device, 107, ctrl_base_color(107, 0));
                 if b.device.number != device_number {
                     // Other boards: the user is not holding Settings there,
                     // so repaint Settings too.
-                    paint_ctrl_button(&b.device, 100, ctrl_base_color(100, 0));
+                    painter.ctrl(&b.device, 100, ctrl_base_color(100, 0));
                 }
             }
             // Persist on a background thread.
@@ -706,98 +824,113 @@ pub fn cmd_serve(
             display,
             hud_ctx_for_ui.clone(),
             hud_url.clone(),
+            api.clone(),
             &mut |device_number, cc, pressed, tunings, output| {
-                let Some(board_idx) = boards_cyc
-                    .iter()
-                    .position(|b| b.device.number == device_number)
-                else {
-                    return Ok(());
+                // A layout the local API asked for arrives as a press of no board's button.
+                let api_target = if device_number == API_DEVICE {
+                    match api.as_ref().and_then(|a| a.borrow_mut().take_layout_request()) {
+                        Some(path) => Some(path),
+                        None => return Ok(()),
+                    }
+                } else {
+                    None
                 };
-                let board = boards_cyc[board_idx].clone();
+                if api_target.is_none() {
+                    let Some(board_idx) = boards_cyc
+                        .iter()
+                        .position(|b| b.device.number == device_number)
+                    else {
+                        return Ok(());
+                    };
+                    let board = boards_cyc[board_idx].clone();
 
-                if !pressed {
-                    let cur = current_shifts.get(&device_number).copied().unwrap_or(0);
-                    paint_ctrl_button(&board.device, cc, ctrl_base_color(cc, cur));
-                    return Ok(());
-                }
+                    if !pressed {
+                        let cur = current_shifts.get(&device_number).copied().unwrap_or(0);
+                        painter.ctrl(&board.device, cc, ctrl_base_color(cc, cur));
+                        return Ok(());
+                    }
 
-                paint_ctrl_button(&board.device, cc, pressed_color());
+                    painter.ctrl(&board.device, cc, pressed_color());
 
-                match cc {
-                    107 | 106 => {
-                        let shift_before =
-                            current_shifts.get(&device_number).copied().unwrap_or(0);
-                        let delta: i32 = if cc == 107 { 1 } else { -1 };
-                        let new_shift = shift_before + delta;
-                        let bl = match current_layout.boards.get(&board.board_name) {
-                            Some(b) => b,
-                            None => return Ok(()),
-                        };
-                        if !shift_in_range(
-                            bl,
-                            current_edo,
-                            current_layout.pitch_offset,
-                            new_shift,
-                        ) {
-                            return Ok(());
-                        }
-                        current_shifts.insert(device_number, new_shift);
-                        display_for_cb
-                            .borrow_mut()
-                            .shifts
-                            .insert(device_number, new_shift);
-                        tunings.insert(
-                            device_number,
-                            exquis::tuning::TuningState::from_board(
+                    match cc {
+                        107 | 106 => {
+                            let shift_before =
+                                current_shifts.get(&device_number).copied().unwrap_or(0);
+                            let delta: i32 = if cc == 107 { 1 } else { -1 };
+                            let new_shift = shift_before + delta;
+                            let bl = match current_layout.boards.get(&board.board_name) {
+                                Some(b) => b,
+                                None => return Ok(()),
+                            };
+                            if !shift_in_range(
                                 bl,
                                 current_edo,
                                 current_layout.pitch_offset,
-                                2 + new_shift,
-                                pb_range,
-                                x_gain,
-                            ),
-                        );
-                        // Repaint only the OTHER arrow — its color may have
-                        // flipped. The pressed button stays white until release.
-                        let other_cc: u8 = if cc == 107 { 106 } else { 107 };
-                        paint_ctrl_button(
-                            &board.device,
-                            other_cc,
-                            ctrl_base_color(other_cc, new_shift),
-                        );
-                        return Ok(());
+                                new_shift,
+                            ) {
+                                return Ok(());
+                            }
+                            current_shifts.insert(device_number, new_shift);
+                            display_for_cb
+                                .borrow_mut()
+                                .shifts
+                                .insert(device_number, new_shift);
+                            if let Some(a) = &api {
+                                a.borrow_mut().set_shift(device_number, new_shift);
+                            }
+                            tunings.insert(
+                                device_number,
+                                exquis::tuning::TuningState::from_board(
+                                    bl,
+                                    current_edo,
+                                    current_layout.pitch_offset,
+                                    2 + new_shift,
+                                    pb_range,
+                                    x_gain,
+                                ),
+                            );
+                            // Repaint only the OTHER arrow — its color may have
+                            // flipped. The pressed button stays white until release.
+                            let other_cc: u8 = if cc == 107 { 106 } else { 107 };
+                            painter.ctrl(
+                                &board.device,
+                                other_cc,
+                                ctrl_base_color(other_cc, new_shift),
+                            );
+                            return Ok(());
+                        }
+                        100 => {
+                            // Cycle layout.
+                        }
+                        _ => return Ok(()),
                     }
-                    100 => {
-                        // Cycle layout.
-                    }
-                    _ => return Ok(()),
                 }
                 // --- Settings pressed: cycle to next .xtn ---
+                if let Some(a) = &api {
+                    a.borrow_mut().release_all(output);
+                }
                 // Release notes via CC 123 all-notes-off on every channel.
                 for ch in 0u8..16 {
                     let _ = output.send(&[0xB0 | ch, 123, 0]);
                 }
-                let new_path = match layouts::next(
-                    layouts::LayoutKind::Xtn,
-                    &current_layout_path,
-                ) {
+                let new_path = match next_layout(api_target, &current_layout_path) {
                     Ok(p) => p,
                     Err(e) => {
-                        eprintln!("layout cycle: {e:#}");
+                        layout_cycle_failed(&api, format!("{e:#}"));
                         return Ok(());
                     }
                 };
                 let new_layout = match xtn::parse_xtn(&new_path) {
                     Ok(l) => l,
                     Err(e) => {
-                        eprintln!("layout cycle: {e:#}");
+                        layout_cycle_failed(&api, format!("{e:#}"));
                         return Ok(());
                     }
                 };
                 let new_edo = match new_layout.edo {
                     Some(e) => e,
                     None => {
-                        eprintln!("layout cycle: {} has no Edo=", new_path.display());
+                        layout_cycle_failed(&api, format!("{} has no Edo=", new_path.display()));
                         return Ok(());
                     }
                 };
@@ -835,6 +968,9 @@ pub fn cmd_serve(
                         );
                     }
                 }
+                if let Some(a) = &api {
+                    a.borrow_mut().set_layout(&new_layout, new_edo, &new_path);
+                }
                 // Repaint pads.
                 for b in &boards_cyc {
                     let Some(bl) = new_layout.boards.get(&b.board_name) else {
@@ -850,25 +986,11 @@ pub fn cmd_serve(
                             .corrected(&correction_cyc);
                         pads[i as usize] = (i, c);
                     }
-                    let _ = send_to_outputs(
-                        &[b.device.clone()],
-                        DeviceSelection::All,
-                        &exquis::proto::enter_dev_mode(exquis::proto::DEV_MASK_NO_PADS),
-                    );
-                    let _ = send_to_outputs(
-                        &[b.device.clone()],
-                        DeviceSelection::All,
-                        &exquis::proto::snapshot_set_pads(&pads),
-                    );
-                    let _ = send_to_outputs(
-                        &[b.device.clone()],
-                        DeviceSelection::All,
-                        &exquis::proto::enter_dev_mode(exquis::proto::DEV_MASK_NO_PADS),
-                    );
-                    paint_ctrl_button(&b.device, 106, ctrl_base_color(106, 0));
-                    paint_ctrl_button(&b.device, 107, ctrl_base_color(107, 0));
+                    painter.pads(&b.device, &pads);
+                    painter.ctrl(&b.device, 106, ctrl_base_color(106, 0));
+                    painter.ctrl(&b.device, 107, ctrl_base_color(107, 0));
                     if b.device.number != device_number {
-                        paint_ctrl_button(&b.device, 100, ctrl_base_color(100, 0));
+                        painter.ctrl(&b.device, 100, ctrl_base_color(100, 0));
                     }
                 }
                 let persist_path = new_path.clone();
