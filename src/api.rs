@@ -22,12 +22,13 @@
 //!
 //! The description is backend-neutral: every key has an address (board, key), a position in
 //! the geometry's shared hex lattice (board shifts already applied) and a pitch. Clients
-//! need no knowledge of a particular keyboard. Only the openxen backend feeds it so far.
+//! need no knowledge of a particular keyboard. The openxen and the Wooting backend feed it
+//! (`openxen/serve.rs` `ApiLink`, `wooting/api_link.rs`).
 //!
 //! Threading: the serve loop owns the devices. HTTP threads only read shared state
 //! (`ApiHub`) and queue `Command`s, which the serve loop applies between scans.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::Read;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -540,6 +541,116 @@ impl ApiHub {
     }
 }
 
+// --- serve-loop side: state both backends keep for the API ---
+
+/// Where the serve loop's MIDI goes (each backend's own output; a list in tests).
+pub trait MidiSink {
+    fn send3(&mut self, msg: [u8; 3]);
+}
+
+impl MidiSink for Vec<[u8; 3]> {
+    fn send3(&mut self, msg: [u8; 3]) {
+        self.push(msg);
+    }
+}
+
+/// Notes sounded for the API, with the time at which xentool releases them.
+#[derive(Default)]
+pub struct TimedNotes {
+    /// Layout keys: (board, key) -> (channel 0..15, note, when to release).
+    keyed: HashMap<(u8, u8), (u8, u8, Option<Instant>)>,
+    /// Raw notes (clicks, percussion): (channel 0..15, note, when to release).
+    raw: Vec<(u8, u8, Instant)>,
+}
+
+impl TimedNotes {
+    /// Sound `key` as (channel, note); a note still sounding on that key is released first.
+    #[allow(clippy::too_many_arguments)]
+    pub fn key_on(&mut self, key: (u8, u8), ch: u8, note: u8, velocity: u8, ms: Option<u32>, now: Instant, midi: &mut impl MidiSink) {
+        self.key_off(key, midi);
+        let (ch, note) = (ch & 0x0F, note & 0x7F);
+        midi.send3([0x90 | ch, note, velocity & 0x7F]);
+        self.keyed.insert(key, (ch, note, ms.map(|ms| now + Duration::from_millis(ms as u64))));
+    }
+
+    pub fn key_off(&mut self, key: (u8, u8), midi: &mut impl MidiSink) {
+        if let Some((ch, note, _)) = self.keyed.remove(&key) {
+            midi.send3([0x80 | ch, note, 0]);
+        }
+    }
+
+    /// A note outside the layout, on the channel the client chose.
+    pub fn raw_on(&mut self, n: &MidiNote, now: Instant, midi: &mut impl MidiSink) {
+        let ch = n.channel.saturating_sub(1).min(15);
+        midi.send3([0x90 | ch, n.note & 0x7F, n.velocity & 0x7F]);
+        self.raw.push((ch, n.note & 0x7F, now + Duration::from_millis(n.ms as u64)));
+    }
+
+    /// Release the notes whose length has passed.
+    pub fn tick(&mut self, now: Instant, midi: &mut impl MidiSink) {
+        if !self.raw.is_empty() {
+            self.raw.retain(|&(ch, note, until)| {
+                if now >= until {
+                    midi.send3([0x80 | ch, note, 0]);
+                }
+                now < until
+            });
+        }
+        if self.keyed.is_empty() {
+            return;
+        }
+        let due: Vec<(u8, u8)> = self.keyed.iter().filter(|(_, v)| v.2.is_some_and(|t| now >= t)).map(|(k, _)| *k).collect();
+        for key in due {
+            self.key_off(key, midi);
+        }
+    }
+
+    pub fn release_all(&mut self, midi: &mut impl MidiSink) {
+        for (ch, note, _) in self.raw.drain(..) {
+            midi.send3([0x80 | ch, note, 0]);
+        }
+        for (_, (ch, note, _)) in self.keyed.drain() {
+            midi.send3([0x80 | ch, note, 0]);
+        }
+    }
+}
+
+/// The overlay as the API last asked for it, by key address. The serve loop keeps it so
+/// that a board that reconnects (or whose LED mapping changes) gets its part back.
+#[derive(Default)]
+pub struct OverlayState {
+    pub keys: HashMap<(u8, u8), Rgb>,
+    /// Brightness of the layout colours while an overlay is shown; stays once given.
+    pub dim_base: Option<f32>,
+}
+
+impl OverlayState {
+    /// First `clear`, then `set` (keys for which `valid` is false are ignored).
+    pub fn apply(&mut self, clear: &OverlayClear, set: &[(u8, u8, Rgb)], dim_base: Option<f32>, valid: impl Fn(u8, u8) -> bool) {
+        match clear {
+            OverlayClear::None => {}
+            OverlayClear::All => self.keys.clear(),
+            OverlayClear::Keys(keys) => {
+                for k in keys {
+                    self.keys.remove(k);
+                }
+            }
+        }
+        for &(b, k, rgb) in set {
+            if valid(b, k) {
+                self.keys.insert((b, k), rgb);
+            }
+        }
+        if dim_base.is_some() {
+            self.dim_base = dim_base;
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        !self.keys.is_empty()
+    }
+}
+
 // --- HTTP ---
 
 /// Start the API server on a background thread. Returns the bound port once the listener
@@ -864,6 +975,47 @@ mod tests {
         assert_eq!((l["current"].as_str(), l["last_error"].is_null()), (Some("53ET-bosanquet"), true));
         assert_eq!(get("/api/setup")["edo"], 53);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn timed_notes_release_themselves() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut out: Vec<[u8; 3]> = Vec::new();
+        let mut n = TimedNotes::default();
+        n.key_on((0, 5), 2, 60, 90, Some(100), t0, &mut out);
+        n.key_on((0, 6), 2, 62, 90, None, t0, &mut out);
+        n.raw_on(&MidiNote { channel: 10, note: 76, velocity: 100, ms: 40 }, t0, &mut out);
+        assert_eq!(out, vec![[0x92, 60, 90], [0x92, 62, 90], [0x99, 76, 100]]);
+        out.clear();
+        n.tick(at(39), &mut out);
+        assert!(out.is_empty());
+        n.tick(at(40), &mut out);
+        assert_eq!(out, vec![[0x89, 76, 0]]);
+        n.tick(at(100), &mut out);
+        assert_eq!(out[1..], [[0x82, 60, 0]]);
+        // the same key again: the sounding note is released before the new one starts
+        out.clear();
+        n.key_on((0, 6), 3, 64, 80, None, at(200), &mut out);
+        assert_eq!(out, vec![[0x82, 62, 0], [0x93, 64, 80]]);
+        out.clear();
+        n.release_all(&mut out);
+        assert_eq!(out, vec![[0x83, 64, 0]]);
+        n.tick(at(10_000), &mut out);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn overlay_state_clears_then_sets_and_keeps_the_dim() {
+        let mut o = OverlayState::default();
+        o.apply(&OverlayClear::None, &[(0, 1, (1, 1, 1)), (1, 2, (2, 2, 2)), (0, 99, (3, 3, 3))], Some(0.3), |_, k| k < 56);
+        assert_eq!(o.keys.len(), 2);
+        o.apply(&OverlayClear::Keys(vec![(0, 1)]), &[], None, |_, _| true);
+        assert_eq!((o.keys.len(), o.dim_base, o.is_active()), (1, Some(0.3), true));
+        o.apply(&OverlayClear::All, &[(0, 3, (4, 4, 4))], None, |_, _| true);
+        assert_eq!(o.keys.get(&(0, 3)), Some(&(4, 4, 4)));
+        o.apply(&OverlayClear::All, &[], None, |_, _| true);
+        assert!(!o.is_active());
     }
 
     #[test]
