@@ -6,10 +6,12 @@
 //! `edit`, `layouts`, `mts`, `settings`, `config`, `logging`, `cli`) hold
 //! cross-device or pure-tooling concerns shared with the Wooting backend.
 
+pub mod api_link;
 pub mod commands;
 pub mod hud_ctx;
 pub mod midi;
 pub mod mpe;
+pub mod overlay;
 pub mod proto;
 pub mod tuning;
 pub mod ui;
