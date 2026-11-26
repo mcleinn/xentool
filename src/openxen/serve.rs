@@ -439,7 +439,7 @@ pub fn cmd_serve_ltn(
         None
     };
     if tune_supercollider {
-        if let Err(e) = crate::hud::osc::spawn_tuning_broadcaster(hud_publisher.clone(), crate::hud::osc::DEFAULT_SC_TUNING_TARGET.into()) {
+        if let Err(e) = crate::hud::osc::spawn_tuning_broadcaster(hud_publisher.clone(), crate::hud::osc::sc_tuning_target()) {
             eprintln!("xentool: tuning broadcast disabled ({e:#})");
         }
     }

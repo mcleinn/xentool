@@ -54,6 +54,22 @@ if(~patchDir.beginsWith("/").not and: { ~patchDir.beginsWith("~").not } and: { ~
 };
 "patch dir: %".format(~patchDir).postln;
 
+// Running next to another SuperCollider instrument (on the Pi the tanpura patch for the
+// Exquis owns the default ports): these environment variables give this patch its own
+// sound server, its own MIDI source and its own tuning port. All unset = as before.
+//   XENTOOL_SC_SERVER_PORT   own scsynth on this UDP port (JACK client "XentoolPiano")
+//   XENTOOL_SC_MIDI_MATCH    take MIDI only from sources whose name contains this
+//   XENTOOL_SC_TUNING_PORT   also listen here for /xentool/tuning
+//   XENTOOL_SC_STUDIO_PORT   port for the settings page (default 57123; replies go to port + 1)
+//   XENTOOL_SC_EDO           tuning to start in, until xentool says otherwise
+"XENTOOL_SC_EDO".getenv !? { |v| ~tuningEdo = v.asInteger };
+"XENTOOL_SC_SERVER_PORT".getenv !? { |v|
+    s = Server(\xentoolPiano, NetAddr("127.0.0.1", v.asInteger));
+    s.options.device = "XentoolPiano";
+    Server.default = s;
+    "own sound server on port %".format(v).postln;
+};
+
 s.waitForBoot({
 
     SynthDef(\piano, { |freq=440, amp=0.3, gate=1, press=0, bend=0, bright=0.5,
@@ -221,7 +237,20 @@ s.waitForBoot({
     // Android/Termux has no MIDI backend at all: MIDIClient.init throws.
     // xentool then feeds us over OSC instead (see xentool_osc_midi.scd,
     // loaded below), so a failed init is informational, not fatal.
-    ~midiAvailable = try { MIDIClient.init; MIDIIn.connectAll; true } { |e|
+    ~midiMatch = "XENTOOL_SC_MIDI_MATCH".getenv;
+    ~midiAvailable = try {
+        MIDIClient.init;
+        if(~midiMatch.isNil) { MIDIIn.connectAll } {
+            // only the keyboard meant for this instrument; others belong to other synths
+            MIDIClient.sources.do { |src, i|
+                if(src.device.containsi(~midiMatch) or: { src.name.containsi(~midiMatch) }) {
+                    MIDIIn.connect(i, src);
+                    "MIDI from \"%\" / \"%\"".format(src.device, src.name).postln;
+                };
+            };
+        };
+        true
+    } { |e|
         "[!] MIDIClient.init failed (%) — MIDI ports unavailable, using the xentool OSC bridge only."
             .format(e.errorString).postln;
         false
@@ -252,6 +281,7 @@ s.waitForBoot({
     // on every layout cycle, and every 3 s as a resync. We track those
     // here so a layout swap in xentool reaches the synth without needing
     // to restart sclang.
+    "XENTOOL_SC_TUNING_PORT".getenv !? { |v| thisProcess.openUDPPort(v.asInteger) };
     OSCdef(\xentoolTuning, { |msg|
         var edo = msg[1], offset = msg[2], layoutId = (msg[3] ? "");
         if(edo.notNil and: { edo.asInteger > 0 }) {
@@ -478,8 +508,8 @@ s.waitForBoot({
     //
     // Reverb / master are separate Synths; their set messages route to
     // ~pianoReverbSynth / ~pianoMasterSynth instead of voice synths.
-    ~studioPort = 57123;
-    ~studioReplyAddr = NetAddr("127.0.0.1", 57124);
+    ~studioPort = ("XENTOOL_SC_STUDIO_PORT".getenv ? "57123").asInteger;
+    ~studioReplyAddr = NetAddr("127.0.0.1", ~studioPort + 1);
     thisProcess.openUDPPort(~studioPort);
 
     ~studioApply = { |name, value|

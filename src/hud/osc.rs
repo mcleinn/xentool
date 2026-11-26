@@ -181,6 +181,13 @@ fn handle_message(msg: OscMessage, inner: &Arc<RwLock<OscState>>) {
 /// override.
 pub const DEFAULT_SC_TUNING_TARGET: &str = "127.0.0.1:57120";
 
+/// Where `--tune-supercollider` sends the tuning: `XENTOOL_SC_TUNING_TARGET` (host:port) if set,
+/// else sclang's default port. Needed when several SuperCollider instruments run on one
+/// machine and the default port belongs to another one.
+pub fn sc_tuning_target() -> String {
+    std::env::var("XENTOOL_SC_TUNING_TARGET").ok().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| DEFAULT_SC_TUNING_TARGET.to_string())
+}
+
 /// Re-emit the tuning state every 3 s so a late-starting SC instance
 /// catches up without needing the user to cycle layouts.
 const TUNING_RESEND_INTERVAL: Duration = Duration::from_secs(3);

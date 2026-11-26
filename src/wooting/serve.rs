@@ -807,7 +807,7 @@ pub fn cmd_serve_wtn(
     if tune_supercollider {
         if let Err(e) = crate::hud::osc::spawn_tuning_broadcaster(
             hud_publisher.clone(),
-            crate::hud::osc::DEFAULT_SC_TUNING_TARGET.into(),
+            crate::hud::osc::sc_tuning_target(),
         ) {
             eprintln!("xentool: tuning broadcast disabled ({e:#})");
         }
