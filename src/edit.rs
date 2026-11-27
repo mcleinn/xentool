@@ -824,7 +824,27 @@ mod tests {
     #[test]
     fn generators_fill_the_missing_keys_of_the_24_layout() {
         let dir = temp_dir("gen-24");
-        let Some(mut e) = open_copy(&Path::new(REAL_OTN_DIR).join("24ET-isomorphic.otn"), &dir) else { return };
+        // The real layout has all 280 keys. Its top 18 keys (on the last board) were once switched
+        // off; the test switches them off in its copy and lets the generators fill them again.
+        let src = Path::new(REAL_OTN_DIR).join("24ET-isomorphic.otn");
+        if !src.exists() {
+            println!("skipped: {} is not on this machine", src.display());
+            return;
+        }
+        let filled = std::fs::read_to_string(&src).unwrap();
+        let off = [12, 17, 18, 24, 29, 30, 35, 36, 40, 41, 42, 47, 48, 51, 52, 53, 54, 55];
+        let (head, last_board) = filled.split_at(filled.find("[Board4]").expect("five boards"));
+        let mut unfilled = String::from(head);
+        for line in last_board.split_inclusive('\n') {
+            let key = line.trim_end().strip_prefix("Chan_").and_then(|r| r.split_once('=')).and_then(|(k, _)| k.parse::<u32>().ok());
+            match key {
+                Some(k) if off.contains(&k) => unfilled.push_str(&format!("Chan_{k}=0{}", &line[line.trim_end().len()..])),
+                _ => unfilled.push_str(line),
+            }
+        }
+        let path = dir.join("24ET-isomorphic.otn");
+        std::fs::write(&path, &unfilled).unwrap();
+        let mut e = Editor::open(path).unwrap();
         let Some(c) = node_check(&e, &dir) else { return };
         // one key to the right +4, one key up-right +1 (so up-left -3)
         assert_eq!((c.guess.g_a, c.guess.g_b), (4, 1));
@@ -858,6 +878,15 @@ mod tests {
         let changed = original.lines().zip(text.lines()).filter(|(a, b)| a != b).count();
         assert!((18..=18 * 3).contains(&changed), "{changed} lines changed");
         assert_eq!(original.lines().count(), text.lines().count());
+        // and the filled keys sound what the real layout has there
+        let (_, real) = steps(&filled);
+        assert_eq!(real, by_direction);
+        let pitch_of = |t: &str| crate::wooting::wtn::parse_wtn(t).map(|w| {
+            w.boards.iter().flat_map(|(b, cells)| cells.iter().enumerate().map(move |(k, c)| ((*b, k), (c.chan as i32 - 1) * 24 + c.key as i32))).collect::<std::collections::BTreeMap<_, _>>()
+        });
+        if let (Ok(a), Ok(b)) = (pitch_of(&filled), pitch_of(&text)) {
+            assert_eq!(a, b, "the same pitch on every key as in the real layout");
+        }
     }
 
     #[test]
