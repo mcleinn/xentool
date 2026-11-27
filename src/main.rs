@@ -5,6 +5,7 @@ mod edit;
 mod exquis;
 mod geometry;
 mod hud;
+mod layout_text;
 mod layouts;
 mod logging;
 mod midi_out;
@@ -123,8 +124,12 @@ fn main() -> Result<()> {
             boards,
             pitch_offset,
             force,
+            from,
         } => {
             let file = layouts::resolve_layout_path(&file);
+            if let Some(from) = from {
+                return layout_text::cmd_new_from(file, from, edo, pitch_offset, force);
+            }
             if is_otn(&file) {
                 #[cfg(target_os = "android")]
                 bail!("the openxen backend is not available on Android");

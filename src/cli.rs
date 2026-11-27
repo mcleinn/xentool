@@ -181,9 +181,10 @@ pub enum Commands {
         #[command(flatten)]
         color: ColorCorrectionArgs,
     },
-    /// Create a new empty .xtn file for a given EDO and board count (all pads black/0/0).
+    /// Create a new empty layout file (.xtn / .wtn / .otn) for a given EDO and board count
+    /// (all pads black/0/0), or with --from convert a layout for the same keyboard.
     New {
-        /// Output .xtn path (must not exist).
+        /// Output layout path (must not exist).
         file: std::path::PathBuf,
         /// EDO tuning (steps per octave).
         #[arg(long)]
@@ -197,6 +198,11 @@ pub enum Commands {
         /// Overwrite if the file already exists.
         #[arg(long)]
         force: bool,
+        /// Take the keys over from this layout file for the same keyboard, key by key
+        /// (e.g. a Lumatone .ltn into an .otn). Edo is --edo; PitchOffset is --pitch-offset
+        /// if given, else the file's.
+        #[arg(long, value_name = "FILE")]
+        from: Option<std::path::PathBuf>,
     },
     /// Load an .xtn layout file and apply colors to connected boards.
     Load {
@@ -221,9 +227,9 @@ pub enum Commands {
         #[arg(long)]
         no_open: bool,
     },
-    /// Open a web-based visual editor for an .xtn layout file.
+    /// Open a web-based visual editor for a layout file (.xtn, .wtn, .otn / .ltn).
     Edit {
-        /// Path to the .xtn layout file.
+        /// Path to the layout file; one that does not exist yet starts blank.
         file: std::path::PathBuf,
         /// HTTP port for the editor.
         #[arg(long, default_value_t = 8088)]

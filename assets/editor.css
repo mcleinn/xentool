@@ -123,7 +123,7 @@ button:disabled {
   min-height: 0;
 }
 
-/* Wooting mode: boards stack vertically, full-width, with vertical scroll. */
+/* Boards with keycap outlines, shown one by one: stacked, full-width, with vertical scroll. */
 .boards.vertical-stack {
   flex-direction: column;
   overflow-x: hidden;
@@ -168,6 +168,16 @@ button:disabled {
 }
 .board-header-import:hover { background: #555; }
 
+/* The whole keyfield in one picture: fit it into the space there is. */
+.boards.combined .board-container {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.boards.combined .board-svg,
+.boards.vertical-stack .board-svg {
+  width: 100%;
+}
+
 .board-svg {
   display: block;
   flex: 1;
@@ -175,39 +185,6 @@ button:disabled {
   height: 100%;
   width: auto;
 }
-
-.kbd-canvas {
-  position: relative;
-  background: #0d0d0d;
-  border-radius: 8px;
-  margin: 0 auto;
-  width: 100%;
-  aspect-ratio: var(--aspect, 750 / 200);
-}
-/* Combined-pair sub-canvases: reset auto margin so JS-set marginLeft (for
-   the 2-unit shift of the rotated top board) isn't undone by auto margins. */
-.wooting-pair .kbd-canvas {
-  margin: 0;
-}
-.wooting-pair .kbd-canvas + .kbd-canvas {
-  margin-top: 0.5rem;
-}
-.kbd-rect {
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 6px;
-  padding: 2px 4px;
-  overflow: hidden;
-  font-size: 0.7rem;
-  font-family: monospace;
-  line-height: 1;
-  cursor: pointer;
-  z-index: 1;
-  white-space: nowrap;
-}
-.kbd-rect:hover { outline: 2px solid #fc6; z-index: 2; }
-.kbd-rect.selected { outline: 2px solid #fff; z-index: 2; }
-.kbd-rect.mismatch { outline: 2px dashed #ff4040; z-index: 2; }
-.kbd-rect.missing { outline: 2px dashed #888; z-index: 2; }
 
 .pad {
   stroke: #333;
@@ -489,3 +466,25 @@ input[type="color"] {
   height: 2.2rem;
   padding: 2px;
 }
+
+/* A key that is off (Chan 0). */
+.pad.off {
+  stroke-dasharray: 3 2;
+  stroke: #666;
+}
+
+.kind-info {
+  font-size: 0.8rem;
+  color: #9ab;
+  margin-left: 0.5rem;
+}
+
+.notice {
+  background: #2a2f1f;
+  border: 1px solid #6a7a3a;
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.8rem;
+}
+.notice p { margin: 0.15rem 0; }
