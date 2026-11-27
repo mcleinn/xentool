@@ -25,6 +25,24 @@ pub enum LayoutKind {
 }
 
 impl LayoutKind {
+    /// Every kind of layout file xentool knows.
+    pub const ALL: [LayoutKind; 3] = [LayoutKind::Xtn, LayoutKind::Wtn, LayoutKind::Otn];
+
+    /// File extensions read as this kind (the first is the one written by `xentool new`).
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            LayoutKind::Wtn => &["wtn"],
+            LayoutKind::Xtn => &["xtn"],
+            LayoutKind::Otn => &["otn", "ltn"],
+        }
+    }
+
+    /// Kind of a file by its extension; a file with another extension is read as `.xtn`,
+    /// as the commands of `main.rs` do.
+    pub fn of_path(p: &Path) -> Self {
+        Self::from_extension(p).unwrap_or(LayoutKind::Xtn)
+    }
+
     pub fn from_extension(p: &Path) -> Option<Self> {
         let ext = p.extension()?.to_str()?.to_ascii_lowercase();
         match ext.as_str() {

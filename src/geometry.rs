@@ -6,6 +6,8 @@
 
 use serde::Serialize;
 
+use crate::layouts::LayoutKind;
+
 pub const HEX_NEIGHBOR_DELTAS: [(i32, i32); 6] = [
     (0, -2),
     (0, 2),
@@ -206,6 +208,10 @@ pub struct GeometryInfo {
     pub board_shift: Option<(i32, i32)>,
     /// Rendering convention.
     pub orientation: Orientation,
+    /// Physical key outlines per board as (key, [x, y, w, h]) in one plane for all boards,
+    /// for keyboards whose keys are not hexagons (a Wooting's keycaps). Empty: every key is
+    /// drawn as a hexagon at its lattice position.
+    pub outlines: Vec<Vec<(u8, [f32; 4])>>,
 }
 
 pub fn geometries(exquis_board_count: u8) -> Vec<GeometryInfo> {
@@ -230,6 +236,7 @@ pub fn geometries(exquis_board_count: u8) -> Vec<GeometryInfo> {
             boards: exquis_boards,
             board_shift: Some((EXQUIS_BOARD_STRIDE_X, EXQUIS_BOARD_STRIDE_Y)),
             orientation: Orientation::YRightXUp,
+            outlines: Vec::new(),
         },
         GeometryInfo {
             name: "lumatone",
@@ -238,6 +245,7 @@ pub fn geometries(exquis_board_count: u8) -> Vec<GeometryInfo> {
             boards: ltn_boards,
             board_shift: Some((2, 12)),
             orientation: Orientation::YRightXDown,
+            outlines: Vec::new(),
         },
         GeometryInfo {
             name: "wooting",
@@ -246,6 +254,7 @@ pub fn geometries(exquis_board_count: u8) -> Vec<GeometryInfo> {
             boards: wtn_boards,
             board_shift: Some(WTN_BOARD_SHIFT),
             orientation: Orientation::YRightXDown,
+            outlines: Vec::new(),
         },
     ]
 }
@@ -255,6 +264,39 @@ pub fn geometry_by_name(name: &str, exquis_board_count: u8) -> Option<GeometryIn
     geometries(exquis_board_count)
         .into_iter()
         .find(|g| g.name == lname || g.aliases.iter().any(|a| *a == lname))
+}
+
+// ==========================================================================
+// Geometry of a layout file kind: the one place that says which keyboard a
+// `.xtn` / `.wtn` / `.otn` file is drawn and edited on.
+// ==========================================================================
+
+/// Number of boards a new layout file of this kind starts with.
+pub fn default_board_count(kind: LayoutKind) -> u8 {
+    match kind {
+        LayoutKind::Xtn => 4,
+        LayoutKind::Wtn => 2,
+        LayoutKind::Otn => 5,
+    }
+}
+
+/// The keyboard a layout file of `kind` with `boards` boards belongs to. Key numbers are the
+/// indices used in the file (`Key_n` / `Chan_n` / `Col_n`), positions are in one hex lattice
+/// for all boards. Consumers (the layout editor) need nothing else to draw the keyboard, so a
+/// further keyboard is a further arm here plus its `LayoutKind`.
+pub fn layout_geometry(kind: LayoutKind, boards: u8) -> GeometryInfo {
+    let boards = boards.max(1);
+    match kind {
+        LayoutKind::Xtn => geometry_by_name("exquis", boards).expect("the exquis geometry exists"),
+        LayoutKind::Otn => {
+            let mut g = geometry_by_name("lumatone", 1).expect("the lumatone geometry exists");
+            g.boards.truncate(boards as usize);
+            g
+        }
+        // The named "wooting" geometry counts the keys of a board 0..52; a `.wtn` file
+        // numbers them row * 14 + column, and which board is turned depends on their number.
+        LayoutKind::Wtn => crate::wooting::api_link::geometry_for(boards),
+    }
 }
 
 // ==========================================================================

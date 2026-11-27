@@ -80,6 +80,7 @@ pub fn geometry_for(total: u8) -> GeometryInfo {
         boards: (0..total).map(|b| board_positions(b, total)).collect(),
         board_shift: Some(WTN_BOARD_SHIFT),
         orientation: Orientation::YRightXDown,
+        outlines: (0..total).map(|b| crate::wooting::geometry::board_outlines(b, total)).collect(),
     }
 }
 

@@ -171,9 +171,69 @@ pub fn rotated(i: u8, n: u8) -> bool {
     i % 2 == 0 && i + 1 < n
 }
 
+/// Keycap outlines of `board` when `total` keyboards are connected, as (`.wtn` cell index,
+/// [x, y, w, h]) in one plane for all keyboards: a pair is drawn as it stands on the desk
+/// (the turned keyboard above its partner, shifted by `pair_top_x_shift_px`), further pairs
+/// below. The cell index is the one of `hidmap::wtn_index_for_loc`: row * 14 + column of the
+/// keyboard as it lies, columns counted from the first key of the row.
+pub fn board_outlines(board: u8, total: u8) -> Vec<(u8, [f32; 4])> {
+    let turned = rotated(board, total);
+    let (bw, bh) = (board_width_px(), board_height_px());
+    let pair_y = (board / 2) as f32 * (2.0 * bh + UNIT);
+    let (ox, oy) = if turned {
+        (pair_top_x_shift_px(), pair_y)
+    } else if board % 2 == 1 {
+        (0.0, pair_y + bh)
+    } else {
+        (0.0, pair_y)
+    };
+    let keys = keys_60he();
+    let place = |k: &WootingKey| if turned { (3 - k.row, 13 - k.col) } else { (k.row, k.col) };
+    let mut first_col = [u8::MAX; 4];
+    for k in &keys {
+        let (r, c) = place(k);
+        first_col[r as usize] = first_col[r as usize].min(c);
+    }
+    let mut out: Vec<(u8, [f32; 4])> = keys
+        .iter()
+        .map(|k| {
+            let (r, c) = place(k);
+            let (x, y) = if turned { (bw - (k.x + k.w), bh - (k.y + k.h)) } else { (k.x, k.y) };
+            (r * 14 + (c - first_col[r as usize]), [ox + x, oy + y, k.w, k.h])
+        })
+        .collect();
+    out.sort_by_key(|o| o.0);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outlines_cover_the_cells_of_the_lattice_in_the_same_order() {
+        for total in 1..=4u8 {
+            for board in 0..total {
+                let outlines = board_outlines(board, total);
+                let mut lattice = crate::wooting::api_link::board_positions(board, total);
+                lattice.sort_by_key(|p| p.0);
+                assert_eq!(outlines.len(), 53);
+                assert_eq!(
+                    outlines.iter().map(|o| o.0).collect::<Vec<_>>(),
+                    lattice.iter().map(|p| p.0).collect::<Vec<_>>(),
+                    "board {board} of {total}"
+                );
+                // within a row, a key further right in the lattice is further right on the desk
+                for (a, b) in outlines.iter().zip(&lattice).collect::<Vec<_>>().windows(2).map(|w| (w[0], w[1])) {
+                    if a.1.1 == b.1.1 {
+                        assert!(a.0.1[0] < b.0.1[0] && a.0.1[1] == b.0.1[1], "board {board} of {total}, cell {}", a.0.0);
+                    }
+                }
+            }
+        }
+        // a pair: the turned keyboard lies above its partner
+        assert!(board_outlines(0, 2)[0].1[1] < board_outlines(1, 2)[0].1[1]);
+    }
 
     #[test]
     fn has_expected_key_count() {
