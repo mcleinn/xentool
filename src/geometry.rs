@@ -212,6 +212,20 @@ pub struct GeometryInfo {
     /// for keyboards whose keys are not hexagons (a Wooting's keycaps). Empty: every key is
     /// drawn as a hexagon at its lattice position.
     pub outlines: Vec<Vec<(u8, [f32; 4])>>,
+    /// How far the whole keyfield is turned for display, in degrees counter-clockwise, so that
+    /// it lies on the screen as it lies in front of the player. The lattice itself is not
+    /// turned: this is a property of how the instrument is built (see `lumatone_tilt_deg`).
+    pub display_rotation_deg: f32,
+}
+
+/// The Lumatone keyfield is a staircase in the lattice: each module sits 12 half-keys to the
+/// right of and 2 rows below the one before. The instrument is built turned so that this
+/// staircase runs level, a band with ragged edges. The angle follows from the module shift
+/// and the hexagon proportions (rows 1.5 key radii apart, half-keys sqrt(3)/2 radii): about
+/// 16.1 degrees counter-clockwise.
+pub fn lumatone_tilt_deg() -> f32 {
+    let (rows, half_keys) = (2.0_f32, 12.0_f32);
+    (rows * 1.5).atan2(half_keys * 3.0_f32.sqrt() / 2.0).to_degrees()
 }
 
 pub fn geometries(exquis_board_count: u8) -> Vec<GeometryInfo> {
@@ -237,6 +251,7 @@ pub fn geometries(exquis_board_count: u8) -> Vec<GeometryInfo> {
             board_shift: Some((EXQUIS_BOARD_STRIDE_X, EXQUIS_BOARD_STRIDE_Y)),
             orientation: Orientation::YRightXUp,
             outlines: Vec::new(),
+            display_rotation_deg: 0.0,
         },
         GeometryInfo {
             name: "lumatone",
@@ -246,6 +261,7 @@ pub fn geometries(exquis_board_count: u8) -> Vec<GeometryInfo> {
             board_shift: Some((2, 12)),
             orientation: Orientation::YRightXDown,
             outlines: Vec::new(),
+            display_rotation_deg: lumatone_tilt_deg(),
         },
         GeometryInfo {
             name: "wooting",
@@ -255,6 +271,7 @@ pub fn geometries(exquis_board_count: u8) -> Vec<GeometryInfo> {
             board_shift: Some(WTN_BOARD_SHIFT),
             orientation: Orientation::YRightXDown,
             outlines: Vec::new(),
+            display_rotation_deg: 0.0,
         },
     ]
 }
@@ -478,6 +495,22 @@ fn html_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_lumatone_keyfield_is_drawn_level_and_no_other_is_turned() {
+        // each module sits 12 half-keys right and 2 rows down: turning by this angle makes that shift horizontal
+        let tilt = lumatone_tilt_deg();
+        assert!((tilt - 16.1).abs() < 0.05, "{tilt}");
+        let (px, py) = (12.0_f32 * 3.0_f32.sqrt() / 2.0, 2.0_f32 * 1.5);
+        let a = tilt.to_radians();
+        assert!((-px * a.sin() + py * a.cos()).abs() < 1e-4);
+        for g in geometries(4) {
+            let want = if g.name == "lumatone" { tilt } else { 0.0 };
+            assert_eq!(g.display_rotation_deg, want, "{}", g.name);
+        }
+        assert_eq!(layout_geometry(LayoutKind::Otn, 5).display_rotation_deg, tilt);
+        assert_eq!(layout_geometry(LayoutKind::Wtn, 2).display_rotation_deg, 0.0);
+    }
+
     use super::*;
 
     #[test]

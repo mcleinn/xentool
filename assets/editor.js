@@ -11,16 +11,25 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 
 // Doubled-y lattice: y = horizontal (step 2 between same-row neighbours), x = row.
 // The orientation says whether row 0 is at the bottom (YRightXUp) or at the top.
+// The geometry may ask for the whole keyfield to be turned on the screen
+// (display_rotation_deg, counter-clockwise): positions and hexagons turn, labels stay upright.
+function displayTurn() {
+  return ((geometry && geometry.display_rotation_deg) || 0) * Math.PI / 180;
+}
+
 function hexToPixel(x, y) {
   const px = y * SHORT;
   const py = geometry.orientation === 'YRightXUp' ? -x * LONG : x * LONG;
-  return { px, py };
+  const a = displayTurn();
+  if (!a) return { px, py };
+  // counter-clockwise as seen on a screen whose y runs downwards
+  return { px: px * Math.cos(a) + py * Math.sin(a), py: -px * Math.sin(a) + py * Math.cos(a) };
 }
 
 function hexPolyPoints(cx, cy, r) {
   const pts = [];
   for (let i = 0; i < 6; i++) {
-    const angle = Math.PI / 3 * i - Math.PI / 2;
+    const angle = Math.PI / 3 * i - Math.PI / 2 - displayTurn();
     pts.push(`${cx + r * Math.cos(angle)},${cy + r * Math.sin(angle)}`);
   }
   return pts.join(' ');
@@ -164,7 +173,8 @@ function shapeOf(cell, outlined) {
     return { rect: true, x, y, w, h, cx: x + w / 2, cy: y + h / 2, minX: x, maxX: x + w, minY: y, maxY: y + h };
   }
   const { px, py } = hexToPixel(cell.x, cell.y);
-  return { rect: false, cx: px, cy: py, minX: px - SHORT, maxX: px + SHORT, minY: py - HEX_SIZE, maxY: py + HEX_SIZE };
+  const reach = displayTurn() ? HEX_SIZE : SHORT;       // a turned hexagon reaches a full radius sideways
+  return { rect: false, cx: px, cy: py, minX: px - reach, maxX: px + reach, minY: py - HEX_SIZE, maxY: py + HEX_SIZE };
 }
 
 function outlineEl(shape, ox, oy, inset, cls) {

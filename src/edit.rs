@@ -76,6 +76,9 @@ pub struct GeometryDto {
     pub directions: Directions,
     pub neighbor_deltas: Vec<[i32; 2]>,
     pub board_shift: Option<[i32; 2]>,
+    /// Degrees the keyfield is turned counter-clockwise on the screen (0 for most keyboards;
+    /// the Lumatone arrangement is drawn level). From the central geometry; display only.
+    pub display_rotation_deg: f32,
     pub boards: Vec<BoardDto>,
     /// Extensions of layout files that can be imported.
     pub import_extensions: Vec<String>,
@@ -112,6 +115,7 @@ pub fn geometry_dto(info: &GeometryInfo, kind: LayoutKind, current_file: &str) -
         directions: Directions::of(info.orientation),
         neighbor_deltas: geometry::HEX_NEIGHBOR_DELTAS.iter().map(|&(a, b)| [a, b]).collect(),
         board_shift: info.board_shift.map(|(a, b)| [a, b]),
+        display_rotation_deg: info.display_rotation_deg,
         boards,
         import_extensions: LayoutKind::ALL.iter().flat_map(|k| k.extensions()).map(|e| e.to_string()).collect(),
     }
