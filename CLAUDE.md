@@ -17,8 +17,9 @@ Top-level (cross-device or pure tooling):
 - `src/main.rs` — thin dispatcher: parses CLI, routes `.wtn` → Wooting backend, `.ltn` → openxen backend, `.xtn` → Exquis backend, holds the multi-device `cmd_list`/`cmd_geometries`/`cmd_geometry`.
 - `src/cli.rs` — clap command definitions.
 - `src/config.rs` — device config (devices.json) for multi-Exquis logical board names + board sync.
-- `src/edit.rs` — web-based visual editor (rouille HTTP server, embedded HTML/JS via include_str!), edits .xtn / .wtn / .ltn.
-- `src/geometry.rs` — hex grid tuples for Exquis/LTN/WTN and hex rotation math.
+- `src/edit.rs` — web-based visual editor (rouille HTTP server, embedded HTML/JS via include_str!) for every layout kind (.xtn / .wtn / .otn / .ltn). Device agnostic: `Editor` (open / geometry / save / import; the HTTP handlers and the tests use it) takes the keyboard from `geometry::layout_geometry(LayoutKind::of_path(file), boards)` and hands the page one description (`GeometryDto`: boards → keys with lattice position and optional keycap outline, orientation, directions). No keyboard is named in `edit.rs` or in the page; a further keyboard is a `LayoutKind` plus an arm in `layout_geometry`. Import: same geometry name → `ImportResponse::Direct` (key by key), else `Place` (lattice positions for the page to overlay).
+- `src/layout_text.rs` — the INI dialect shared by all layout kinds: `LayoutDto` (what the editor works on), `LayoutDoc::parse` / `apply` (a save changes only the lines whose value differs, so an unchanged save is byte-identical and unknown entries survive; never deletes), `write_dto_string` (new files), `direct_import` (same-geometry import, Lumatone `KTyp` 0/4 → key off), `cmd_new_from` (`xentool new OUT --from IN`).
+- `src/geometry.rs` — hex grid tuples for Exquis/LTN/WTN and hex rotation math; `layout_geometry(kind, boards)` is the one place that says which keyboard a layout file kind is drawn on (key numbers = indices of the file; `GeometryInfo::outlines` for keycaps that are not hexagons).
 - `src/layouts.rs` — shared `.wtn` / `.xtn` discovery and cycle order.
 - `src/logging.rs` — JSONL session logging.
 - `src/mts.rs` — MTS-ESP FFI bindings via libloading (runtime-loaded LIBMTS.dll). Used by both backends.
@@ -78,7 +79,7 @@ Live HUD (`src/hud/`):
 - `tui_url.rs` — small helper for the `h` shortcut in the TUIs: opens the HUD URL in the browser **and** copies it to the clipboard (`arboard`), pushing a single status line into the events log.
 
 Frontend assets:
-- `assets/editor.{html,css,js}` — frontend for the visual editor (vanilla JS, SVG hex rendering).
+- `assets/editor.{html,css,js}` — frontend for the visual editor (vanilla JS, SVG; one keyfield renderer for every keyboard). `assets/editor-core.js` holds the arithmetic without DOM (keyfield, generators: guess / verify / repair, direct import); the tests in `src/edit.rs` run it under Node through `scripts/editor_core_check.js` (skipped without Node).
 - `assets/live.{html,css,js}` — Live HUD frontend (vanilla JS, port of xenwooting's `LivePage.tsx` — black canvas, auto-fit centered text, four tap-cycle views, Bravura font, OSC parameter strip, xenharm-error footer).
 - `assets/chordnam.par` — Scala chord-name database (~30 KB, 844 chords) embedded into the binary.
 - `assets/Bravura.otf` — SMuFL music font (~512 KB) embedded into the binary so users see microtonal accidentals without a separate install.

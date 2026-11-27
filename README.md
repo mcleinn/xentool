@@ -51,7 +51,7 @@ macOS.
 
 **Layouts**
 
-- Visual web editor for `.xtn` / `.wtn` / `.ltn` (Lumatone) files —
+- Visual web editor for `.xtn` / `.wtn` / `.otn` / `.ltn` (Lumatone) files —
   paint pads, set tunings, import other layouts, rotate, translate,
   save.
 - Multi-board for Exquis (up to 4 boards in one stack).
@@ -384,34 +384,74 @@ on the right edge of the HUD page.
 ## Layout editor
 
 ```
-xentool edit xtn/edo31.xtn
-xentool edit wtn/edo31.wtn
+xentool edit xtn/edo31.xtn           # Exquis
+xentool edit wtn/edo31.wtn           # Wooting
+xentool edit otn/edo53.otn           # openxen (also a Lumatone .ltn)
 xentool edit xtn/edo31.xtn --open    # also auto-open in your default browser
 ```
 
 Starts a local HTTP editor on port 8088 (override with `--port`).
 Open the URL printed on stdout, or pass `--open` to launch your
-default browser automatically. Each connected / configured board
-renders as a hex panel; Key / Chan / Colour are edited in the
-sidebar. Save writes back to the file.
+default browser automatically. A file that does not exist yet starts
+as a blank layout of the kind its extension says and is created by
+the first save.
 
-Import: pick a `.ltn` (Lumatone), `.wtn` (xenwooting), or another
-`.xtn`. Use arrow keys to translate, `R` to rotate 60° around the
-hovered pad. Enter applies the overlay; Esc cancels. Colours
-round-trip losslessly.
+The editor is the same for every keyboard. It asks xentool's central
+geometry (`xentool geometries`) for the keyboard of the open file and
+draws what it gets: every board in one keyfield (Combined) or board by
+board (Individual), keys as hexagons at their place in the hex
+lattice, or as keycaps where the keyboard has them (Wooting). An
+`.otn` shows the five Lumatone modules of 56 keys in their real
+arrangement. Key / Chan / Colour are edited in the sidebar (`Chan 0`
+switches a key off, it then shows `–`), Edo and PitchOffset in the top
+bar.
 
----
+**Save** changes only the lines of the file whose value changed. A save
+without changes leaves the file byte for byte as it was; comments,
+line ends, the notation of colours and entries the editor does not
+know (`KTyp_n`, velocity tables of a Lumatone file, ..) stay. Keys and
+boards are never deleted by a save. A value that would not load (Key
+above 127, Chan above 16, a colour that is not `RRGGBB`) is refused.
+
+**Generators** (sidebar): a layout that is the same everywhere is given
+by two steps, one key to the right (Gen A) and one key up-right
+(Gen B), from a base key. *Guess from layout* finds them, *Verify*
+marks the keys that are off or unset (grey) and the keys that do not
+follow (red), *Repair* fills exactly those and leaves the rest. A
+filled key gets the colour that keys of the same pitch class have, and
+is written the way the layout writes its pitches (octaves by channel
+where every Key is below Edo; otherwise the channel of its board, or
+the nearest channel on which the Key fits 0-127). A key whose pitch no
+channel holds is left and counted.
+
+**Import**: pick a `.ltn` (Lumatone), `.otn`, `.wtn` or `.xtn`.
+
+- A file for the same keyboard as the open one (a `.ltn` or `.otn`
+  into an `.otn`, `.wtn` into `.wtn`, `.xtn` into `.xtn`) is taken over
+  one to one: board n stays board n, key k stays key k, with Key, Chan
+  and Colour. Edo and PitchOffset come from the import if it has them;
+  a plain Lumatone file has neither, then the open layout's values
+  stay and the page says so (set Edo before saving). Boards the import
+  lacks stay as they are. Keys a Lumatone file marks as disabled
+  (`KTyp` 0 or 4) are switched off; everything else of a Lumatone file
+  (`KTyp`, `CCInvert`, global settings) is not part of a layout and is
+  not taken over. Without the browser:
+  `xentool new out.otn --from in.ltn --edo 31`.
+- A file for another keyboard is laid over the open one: arrow keys
+  move it, `R` turns it 60° around the hovered key, Enter applies,
+  Esc cancels.
 
 ## File-extension routing
 
-A single `xentool` binary handles both backends — the file extension
+A single `xentool` binary handles all backends — the file extension
 picks the backend:
 
 | Extension | Backend | Layout format              |
 | --------- | ------- | -------------------------- |
 | `.xtn`    | Exquis  | xentool-native (INI)       |
 | `.wtn`    | Wooting | xenwooting (INI)           |
-| `.ltn`    | import  | Lumatone (read-only via `edit`) |
+| `.otn`    | openxen | Lumatone-style (INI) with `Edo=` |
+| `.ltn`    | openxen | Lumatone; needs an `Edo=` line to be played, `edit` opens it as it is |
 
 So `xentool serve foo.xtn` runs the Exquis serve loop and `xentool
 serve foo.wtn` runs the Wooting serve loop. Same for `load` / `new`.
