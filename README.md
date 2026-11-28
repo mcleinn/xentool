@@ -638,6 +638,64 @@ bundled SC piano patch defaults to ±2.
 
 ---
 
+## openxen backend
+
+Experimental. `xentool serve <file.otn>` plays the openxen keyboard: five USB modules of
+56 Hall-effect keys which together are a Lumatone keyfield (`.otn` layouts, MTS-ESP, LEDs
+in the layout colours). Settings are in the `openxen` section of `settings.json`.
+
+### Board order
+
+Each module plays one board of the layout (board 0 is the leftmost). A serial number listed
+in the settings (`openxen.boards`: `[{"serial", "board"}]`) keeps its board; other modules
+take the lowest free board in the order they appear, which need not be the order on the
+desk. `xentool boards` checks and corrects this:
+
+```
+xentool boards                                      # list, light, ask, correct
+xentool boards order orange red green blue white    # the colours as seen, left to right
+xentool boards order 2 1 3 4 5                      # the same with positions
+xentool boards order orange red green blue white --dry-run
+xentool boards pin                                  # pin the modules where they are
+xentool boards unpin <serial> | --all
+```
+
+`xentool boards` lists the connected modules from left to right (position, colour, serial
+number, pinned or assigned automatically) and lights every module in the colour of its
+position: **1 red, 2 orange, 3 green, 4 blue, 5 white**. Then it asks whether that is what
+you see:
+
+- **y** or Enter: the identification colours go away at once.
+- **n**, or simply the colours as you see them from left to right (names, their beginnings
+  or positions; every connected module exactly once): the new order is shown by serial
+  number (before / after), all connected modules are pinned in `settings.json`, the order
+  is applied at once, the boards are lit again and the question is asked again.
+- **q** at the order question leaves everything as it is.
+
+However the command ends (confirmed, quit, no answer within `--seconds`, default 60, an
+error, Ctrl+C), the boards do not stay in the identification colours: while a `xentool
+serve` runs, its layout colours return at full brightness; when nothing is serving, the LEDs
+are switched off (as an extra safeguard the modules also switch them off by themselves two
+seconds after a killed command). `--yes`, or input that is not a terminal, shows the colours
+for `--seconds` without a question; `--seconds 0` only lists.
+
+It works in both situations:
+
+- **A `xentool serve --api` is running** (API port `9098`, `--api-port`): the command talks
+  to it. A new order takes effect while it plays: the modules that move stop sounding, then
+  show the layout colours and play the keys of their new board; no restart.
+- **Nothing is serving**: the modules are opened directly; the next `serve` uses the order.
+  A serve started without `--api` is not noticed and has to be restarted after a change.
+
+Before the first change of a run, the settings file is copied to
+`settings.json.before-boards-<date>-<time>`. Pins of modules that are not connected stay,
+unless a connected module now has their position: such a pin is removed and named.
+`--dry-run` shows the listing and the before / after and writes nothing. A keyboard with a
+fixed board order (Wooting, Exquis) is listed and lit the same way; only changing the order
+is refused.
+
+---
+
 ## Pushing your own params to the HUD from any OSC client
 
 xentool listens for OSC on UDP `9000` by default (override with
@@ -674,6 +732,8 @@ knows nothing about tutoring. It listens on `127.0.0.1` only.
 | `GET /api/layouts` | Layout files next to the served one (name = file name without extension, EDO), the current one, and how the last switch went |
 | `POST /api/layout` | `{"name"}`: load another of these layouts while serving (tuning, colours and `/api/setup` follow; a `setup` event is sent) |
 | `POST /api/chords/name` | `{"edo", "pitch_classes": [..]}` → chord names per root (the HUD's chord list) |
+| `GET /api/boards` | Which device plays which board: `modules` (`board`, `serial`, `pinned`; also in `/api/setup`), and `reassign`: whether the order can be changed while serving (openxen) |
+| `POST /api/boards` | `{"assign": [{"serial", "board"}, ..], "pins": [{"serial", "board"}, ..]}`: move connected modules to other boards at once (their sounding notes are released, colours and key mapping follow, a `setup` event is sent); `pins` replaces the pinning used for modules that connect later. `501` where the order is fixed. `xentool boards` uses it and writes the settings file itself |
 
 While an overlay is shown, the module's own press highlight is switched off and the LED
 screensaver is held off.
