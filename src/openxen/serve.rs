@@ -23,7 +23,7 @@ use crate::openxen::hid::{Event, Manager};
 use crate::openxen::keys::{Action, KeyMachine, KeyParams, VelocitySource};
 use crate::openxen::led::{self, LedConfig, LedMsg};
 use crate::openxen::proto::MAX_KEYS;
-use crate::settings::OpenxenSettings;
+use crate::settings::{OpenxenBoardSettings, OpenxenSettings};
 use crate::wooting::modes::{AftertouchMode, VelocityProfile, default_velocity_profiles};
 use crate::wooting::serve::publish_tuning;
 use crate::wooting::ui::{DeviceLine, HeldKeyDisplay, SNAPSHOT_INTERVAL, WootingSnapshot, run_wooting_serve_ui, snapshot_due};
@@ -200,14 +200,63 @@ impl Module {
         }
     }
 
-    fn release_all(&mut self, midi: &mut MidiOut) {
+    fn release_all(&mut self, midi: &mut impl crate::api::MidiSink) {
         for k in 0..MAX_KEYS {
             self.keys[k].reset();
             if let Some((ch, note)) = self.sounding[k].take() {
-                midi.send([0x80 | ch, note, 0]);
+                midi.send3([0x80 | ch, note, 0]);
             }
         }
     }
+}
+
+/// Move connected modules to other boards while serving (`POST /api/boards`, sent by
+/// `xentool boards`). Checked as a whole by `api::reassigned` first: on Err nothing has
+/// changed. A module that moves has its sounding notes released (`on_release`: board, key,
+/// channel, note of each, before the note-off) and its key machines reset, so no note
+/// hangs on the board it leaves. Returns the serials that moved; their layout colours and
+/// overlay have to be sent again by the caller.
+fn reassign_modules(
+    modules: &mut HashMap<Arc<str>, Module>,
+    boards: &mut BTreeMap<u8, Arc<str>>,
+    assign: &[(String, u8)],
+    midi: &mut impl crate::api::MidiSink,
+    mut on_release: impl FnMut(u8, usize, u8, u8),
+) -> Result<Vec<Arc<str>>, String> {
+    let current: Vec<(String, u8)> = boards.iter().map(|(b, s)| (s.to_string(), *b)).collect();
+    let target = crate::api::reassigned(&current, assign, MAX_BOARDS)?;
+    let mut moved = Vec::new();
+    for (serial, board) in &target {
+        let Some((key, m)) = modules.get_key_value(serial.as_str()).map(|(k, m)| (k.clone(), m.board)) else { continue };
+        if m == *board {
+            continue;
+        }
+        let module = modules.get_mut(&key).expect("module just found");
+        for (k, s) in module.sounding.iter().enumerate() {
+            if let Some((ch, note)) = *s {
+                on_release(module.board, k, ch, note);
+            }
+        }
+        module.release_all(midi);
+        module.board = *board;
+        moved.push(key);
+    }
+    if !moved.is_empty() {
+        *boards = modules.iter().map(|(serial, m)| (m.board, serial.clone())).collect();
+    }
+    Ok(moved)
+}
+
+/// The connected modules as the API describes them.
+fn setup_modules(boards: &BTreeMap<u8, Arc<str>>, pins: &[OpenxenBoardSettings]) -> Vec<crate::api::SetupModule> {
+    boards
+        .iter()
+        .map(|(b, serial)| crate::api::SetupModule {
+            board: *b,
+            serial: serial.to_string(),
+            pinned: pins.iter().any(|p| p.serial == **serial && p.board == *b),
+        })
+        .collect()
 }
 
 // --- local API (`--api`): key events out, LED overlay and demonstration notes in ---
@@ -244,6 +293,13 @@ struct ApiLink {
     notes: crate::api::TimedNotes,
     /// A layout the API asked to switch to; the serve loop takes it.
     layout_request: Option<String>,
+    /// A board reassignment (and/or new pinning) the API asked for; the serve loop takes it.
+    boards_request: Option<BoardsRequest>,
+}
+
+struct BoardsRequest {
+    assign: Vec<(String, u8)>,
+    pins: Option<Vec<(String, u8)>>,
 }
 
 impl ApiLink {
@@ -253,14 +309,15 @@ impl ApiLink {
         let cells = layout_cells(wtn, edo);
         let (hub, rx) = crate::api::ApiHub::new(crate::api::build_setup("openxen", &geometry, &layout, edo, &cells, &[]));
         hub.set_layout_file(file);
+        hub.allow_reassign(MAX_BOARDS);
         let port = crate::api::spawn(hub.clone(), port)?;
         eprintln!("xentool API: listening on http://127.0.0.1:{port}/ (this machine only)");
-        Ok(Self { hub, rx, geometry, cells, layout, edo, pitch_offset: wtn.pitch_offset, started, overlay: Default::default(), notes: Default::default(), layout_request: None })
+        Ok(Self { hub, rx, geometry, cells, layout, edo, pitch_offset: wtn.pitch_offset, started, overlay: Default::default(), notes: Default::default(), layout_request: None, boards_request: None })
     }
 
     /// Another layout was loaded: new key description, and the overlay (which belonged to
     /// the old notes) is gone on every board.
-    fn set_layout(&mut self, wtn: &Wtn, edo: i32, layout: String, boards: &BTreeMap<u8, Arc<str>>, led_tx: &crossbeam_channel::Sender<LedMsg>) {
+    fn set_layout(&mut self, wtn: &Wtn, edo: i32, layout: String, boards: &BTreeMap<u8, Arc<str>>, pins: &[OpenxenBoardSettings], led_tx: &crossbeam_channel::Sender<LedMsg>) {
         self.cells = layout_cells(wtn, edo);
         self.edo = edo;
         self.pitch_offset = wtn.pitch_offset;
@@ -269,13 +326,15 @@ impl ApiLink {
         for serial in boards.values() {
             let _ = led_tx.send(LedMsg::Overlay { serial: serial.clone(), set: Vec::new(), clear: led::OverlayClear::All, dim_base: None });
         }
-        self.publish_boards(boards);
+        self.publish_boards(boards, pins);
         self.hub.layout_result(None);
     }
 
-    fn publish_boards(&self, boards: &BTreeMap<u8, Arc<str>>) {
+    fn publish_boards(&self, boards: &BTreeMap<u8, Arc<str>>, pins: &[OpenxenBoardSettings]) {
         let present: Vec<u8> = boards.keys().copied().collect();
-        self.hub.set_setup(crate::api::build_setup("openxen", &self.geometry, &self.layout, self.edo, &self.cells, &present));
+        let mut setup = crate::api::build_setup("openxen", &self.geometry, &self.layout, self.edo, &self.cells, &present);
+        setup.modules = setup_modules(boards, pins);
+        self.hub.set_setup(setup);
     }
 
     fn key_event(&self, board: u8, key: usize, kind: crate::api::KeyKind, velocity: u8, ch: u8, note: u8) {
@@ -293,10 +352,11 @@ impl ApiLink {
         self.overlay.is_active()
     }
 
-    /// Send a board its part of the overlay (after it connected).
-    fn resend_overlay(&self, board: u8, serial: &Arc<str>, led_tx: &crossbeam_channel::Sender<LedMsg>) {
+    /// Send a board its part of the overlay (after it connected). `replace`: the module may
+    /// show another board's overlay (it was moved), so it is sent even when it is empty.
+    fn resend_overlay(&self, board: u8, serial: &Arc<str>, replace: bool, led_tx: &crossbeam_channel::Sender<LedMsg>) {
         let set: Vec<(u8, led::Rgb)> = self.overlay.keys.iter().filter(|((b, _), _)| *b == board).map(|((_, k), rgb)| (*k, *rgb)).collect();
-        if !set.is_empty() || self.overlay.dim_base.is_some() {
+        if replace || !set.is_empty() || self.overlay.dim_base.is_some() {
             let _ = led_tx.send(LedMsg::Overlay { serial: serial.clone(), set, clear: led::OverlayClear::All, dim_base: self.overlay.dim_base });
         }
     }
@@ -321,6 +381,7 @@ impl ApiLink {
                     }
                 }
                 Command::Layout { name } => self.layout_request = Some(name),
+                Command::Boards { assign, pins } => self.boards_request = Some(BoardsRequest { assign, pins }),
                 Command::Midi { notes } => {
                     for n in &notes {
                         self.notes.raw_on(n, Instant::now(), midi);
@@ -412,6 +473,8 @@ pub fn cmd_serve_ltn(
     settings: &OpenxenSettings,
 ) -> Result<()> {
     let mut file = file;
+    // Own copy: `xentool boards` can change the pinning (`boards`) while serving.
+    let mut settings: OpenxenSettings = settings.clone();
     let (mut wtn, mut edo) = load_layout(&file)?;
     let mut layout_filename = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
 
@@ -451,7 +514,7 @@ pub fn cmd_serve_ltn(
 
     let (led_tx, led_rx) = crossbeam_channel::unbounded::<LedMsg>();
     let _led_worker = led::spawn_worker(led_rx);
-    let _ = led_tx.send(LedMsg::Config(led_config(settings)));
+    let _ = led_tx.send(LedMsg::Config(led_config(&settings)));
     let (ev_tx, ev_rx) = bounded::<Event>(CHANNEL_CAPACITY);
     let mut manager = Manager::new(ev_tx, Some(led_tx.clone()))?;
     manager.refresh()?;
@@ -497,7 +560,7 @@ pub fn cmd_serve_ltn(
         thread::spawn(move || crate::settings::store_last_layout(crate::layouts::LayoutKind::Otn, &p));
     }
 
-    let params = key_params(settings);
+    let params = key_params(&settings);
     let profiles = default_velocity_profiles();
     let profile: VelocityProfile = profiles.get(settings.velocity_profile).cloned().unwrap_or(VelocityProfile::Linear);
 
@@ -526,7 +589,7 @@ pub fn cmd_serve_ltn(
             last_hotplug = Instant::now();
         }
 
-        let pressed = drain(&ev_rx, &mut modules, &mut boards, settings, &params, &profile, &wtn, &mut midi, &log_tx, &led_tx, api.as_ref());
+        let pressed = drain(&ev_rx, &mut modules, &mut boards, &settings, &params, &profile, &wtn, &mut midi, &log_tx, &led_tx, api.as_ref());
         let sounding = modules.values().any(|m| m.sounding.iter().any(|s| s.is_some()));
         // An API command wakes the LEDs like a key press, and an overlay keeps them on.
         let (api_command, overlay_on) = match api.as_mut() {
@@ -564,7 +627,7 @@ pub fn cmd_serve_ltn(
                         let _ = led_tx.send(LedMsg::Frame { serial: serial.clone(), frame: Box::new(board_frame(&wtn, *b)) });
                     }
                     if let Some(a) = api.as_mut() {
-                        a.set_layout(&wtn, edo, crate::hud::layout_id_from_path(&file), &boards, &led_tx);
+                        a.set_layout(&wtn, edo, crate::hud::layout_id_from_path(&file), &boards, &settings.boards, &led_tx);
                     }
                     let p = file.clone();
                     thread::spawn(move || crate::settings::store_last_layout(crate::layouts::LayoutKind::Otn, &p));
@@ -580,6 +643,31 @@ pub fn cmd_serve_ltn(
                     let _ = log_tx.try_send(format!("layout: switching to {name} failed: {e:#}"));
                 }
             }
+        }
+        // `xentool boards` asked for another order of the modules (and/or another pinning):
+        // the modules that move stop sounding, then show and play their new board.
+        if let Some(req) = api.as_mut().and_then(|a| a.boards_request.take()) {
+            if let Some(pins) = req.pins {
+                settings.boards = pins.into_iter().map(|(serial, board)| OpenxenBoardSettings { serial, board }).collect();
+            }
+            let a = api.as_ref().expect("the request came from the API");
+            let moved = reassign_modules(&mut modules, &mut boards, &req.assign, &mut midi, |board, key, ch, note| {
+                a.key_event(board, key, crate::api::KeyKind::Off, 0, ch, note)
+            });
+            match moved {
+                Ok(moved) => {
+                    for serial in &moved {
+                        let Some(b) = modules.get(serial).map(|m| m.board) else { continue };
+                        let _ = led_tx.send(LedMsg::Frame { serial: serial.clone(), frame: Box::new(board_frame(&wtn, b)) });
+                        a.resend_overlay(b, serial, true, &led_tx);
+                        let _ = log_tx.try_send(format!("openxen: module {serial} -> board{b} (reordered)"));
+                    }
+                }
+                Err(e) => {
+                    let _ = log_tx.try_send(format!("openxen: board order not changed: {e}"));
+                }
+            }
+            a.publish_boards(&boards, &settings.boards);
         }
         match screensaver.tick(Instant::now(), pressed || api_command, sounding || overlay_on) {
             Some(ScreensaverChange::Blank) => {
@@ -681,7 +769,7 @@ fn drain(
                         modules.insert(serial.clone(), Module::new(b));
                         let _ = led_tx.send(LedMsg::Frame { serial: serial.clone(), frame: Box::new(board_frame(wtn, b)) });
                         if let Some(a) = api {
-                            a.resend_overlay(b, &serial, led_tx);
+                            a.resend_overlay(b, &serial, false, led_tx);
                         }
                         boards_changed = true;
                         let _ = log_tx.try_send(format!("openxen: module {serial} -> board{b}"));
@@ -730,7 +818,7 @@ fn drain(
     }
     if boards_changed {
         if let Some(a) = api {
-            a.publish_boards(boards);
+            a.publish_boards(boards, &settings.boards);
         }
     }
     pressed
@@ -816,6 +904,62 @@ mod tests {
         assert_eq!(assign_board("C", &s, &taken), Some(3));   // reserved board used when nothing else is free
         taken.insert(3, Arc::<str>::from("x"));
         assert_eq!(assign_board("D", &s, &taken), None);
+    }
+
+    fn two_modules() -> (HashMap<Arc<str>, Module>, BTreeMap<u8, Arc<str>>) {
+        let mut modules: HashMap<Arc<str>, Module> = HashMap::new();
+        let mut boards: BTreeMap<u8, Arc<str>> = BTreeMap::new();
+        for (serial, b) in [("A", 0u8), ("B", 1), ("C", 3)] {
+            let serial: Arc<str> = serial.into();
+            modules.insert(serial.clone(), Module::new(b));
+            boards.insert(b, serial);
+        }
+        (modules, boards)
+    }
+
+    #[test]
+    fn reassignment_moves_modules_and_releases_what_sounds_on_them() {
+        let (mut modules, mut boards) = two_modules();
+        modules.get_mut("A").unwrap().sounding[7] = Some((2, 60));
+        modules.get_mut("C").unwrap().sounding[9] = Some((3, 62));
+        let mut midi: Vec<[u8; 3]> = Vec::new();
+        let mut released = Vec::new();
+        let assign = vec![("A".to_string(), 1u8), ("B".to_string(), 0)];
+        let mut moved = reassign_modules(&mut modules, &mut boards, &assign, &mut midi, |b, k, ch, n| released.push((b, k, ch, n))).unwrap();
+        moved.sort();
+        assert_eq!(moved, vec![Arc::<str>::from("A"), Arc::<str>::from("B")]);
+        // the key mapping follows: frames of A are now looked up on board 1
+        assert_eq!((modules["A"].board, modules["B"].board, modules["C"].board), (1, 0, 3));
+        assert_eq!(boards.iter().map(|(b, s)| (*b, &**s)).collect::<Vec<_>>(), vec![(0, "B"), (1, "A"), (3, "C")]);
+        // A's note is released (as on the board it was played on); C did not move and sounds on
+        assert_eq!(midi, vec![[0x82, 60, 0]]);
+        assert_eq!(released, vec![(0, 7, 2, 60)]);
+        assert_eq!(modules["A"].sounding[7], None);
+        assert_eq!(modules["C"].sounding[9], Some((3, 62)));
+        // what the API then describes
+        let pins = vec![OpenxenBoardSettings { serial: "A".into(), board: 1 }, OpenxenBoardSettings { serial: "C".into(), board: 2 }];
+        let described: Vec<(u8, String, bool)> = setup_modules(&boards, &pins).into_iter().map(|m| (m.board, m.serial, m.pinned)).collect();
+        assert_eq!(described, vec![(0, "B".into(), false), (1, "A".into(), true), (3, "C".into(), false)]);
+    }
+
+    #[test]
+    fn a_refused_reassignment_changes_nothing() {
+        let (mut modules, mut boards) = two_modules();
+        modules.get_mut("A").unwrap().sounding[7] = Some((2, 60));
+        let mut midi: Vec<[u8; 3]> = Vec::new();
+        for bad in [vec![("A".to_string(), 1u8)], vec![("Z".to_string(), 2)], vec![("A".to_string(), MAX_BOARDS)]] {
+            assert!(reassign_modules(&mut modules, &mut boards, &bad, &mut midi, |_, _, _, _| panic!("nothing is released")).is_err());
+        }
+        assert!(midi.is_empty());
+        assert_eq!((modules["A"].board, modules["B"].board), (0, 1));
+        assert_eq!(boards.len(), 3);
+        // an assignment that is already in place moves nothing
+        let same = vec![("A".to_string(), 0u8), ("B".to_string(), 1)];
+        assert!(reassign_modules(&mut modules, &mut boards, &same, &mut midi, |_, _, _, _| panic!()).unwrap().is_empty());
+        // onto a free board
+        let free = vec![("C".to_string(), 4u8)];
+        assert_eq!(reassign_modules(&mut modules, &mut boards, &free, &mut midi, |_, _, _, _| {}).unwrap().len(), 1);
+        assert_eq!(boards.keys().copied().collect::<Vec<_>>(), vec![0, 1, 4]);
     }
 
     #[test]

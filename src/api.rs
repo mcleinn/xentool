@@ -19,6 +19,15 @@
 //!                             sounds keys through the normal MIDI output (`ms`: note length,
 //!                             the note is released by xentool)
 //! - `POST /api/chords/name`   `{"edo", "pitch_classes": [..]}` → chord names per root
+//! - `GET  /api/boards`        which module sits on which board (`modules`: board, serial,
+//!                             pinned in the settings or not) and whether the order can be
+//!                             changed while serving (`reassign`)
+//! - `POST /api/boards`        `{"assign": [{"serial", "board"}, ..], "pins": [{"serial",
+//!                             "board"}, ..]}`: move connected modules to other boards at once
+//!                             (layout colours and key mapping follow, a `setup` event is
+//!                             sent); `pins` (optional) replaces the pinning the serve loop
+//!                             uses for modules that connect later. 501 on a backend with a
+//!                             fixed board order. Used by `xentool boards`.
 //!
 //! The description is backend-neutral: every key has an address (board, key), a position in
 //! the geometry's shared hex lattice (board shifts already applied) and a pitch. Clients
@@ -104,9 +113,21 @@ pub struct Setup {
     pub edo: i32,
     /// Boards that are connected now, ascending.
     pub boards: Vec<u8>,
+    /// The device behind each connected board, where the backend knows devices by serial
+    /// number (openxen); empty otherwise.
+    pub modules: Vec<SetupModule>,
     pub directions: Directions,
     /// Playable keys of the connected boards.
     pub keys: Vec<SetupKey>,
+}
+
+/// A connected device and the board it plays.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetupModule {
+    pub board: u8,
+    pub serial: String,
+    /// The settings file names this board for the serial (else: assigned automatically).
+    pub pinned: bool,
 }
 
 /// One layout cell as the backend knows it: pitch and colour of (board, key).
@@ -159,6 +180,7 @@ pub fn build_setup(backend: &str, geometry: &GeometryInfo, layout: &str, edo: i3
         layout: layout.to_string(),
         edo,
         boards,
+        modules: Vec::new(),
         directions: Directions::of(geometry.orientation),
         keys,
     }
@@ -211,6 +233,57 @@ pub enum Command {
     /// Notes sent as they are on a MIDI channel of the client's choice, outside the layout:
     /// percussion and metronome clicks (channel 10 by General MIDI convention).
     Midi { notes: Vec<MidiNote> },
+    /// Move connected devices to other boards (`assign`: serial → board) and, if given,
+    /// replace the pinning used for devices that connect later (`pins`).
+    Boards { assign: Vec<(String, u8)>, pins: Option<Vec<(String, u8)>> },
+}
+
+#[derive(Deserialize)]
+struct BoardPinBody {
+    serial: String,
+    board: u8,
+}
+
+#[derive(Deserialize)]
+struct BoardsBody {
+    #[serde(default)]
+    assign: Vec<BoardPinBody>,
+    #[serde(default)]
+    pins: Option<Vec<BoardPinBody>>,
+}
+
+pub fn parse_boards(body: &[u8]) -> Result<Command, String> {
+    let b: BoardsBody = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+    let pairs = |v: Vec<BoardPinBody>| v.into_iter().map(|p| (p.serial, p.board)).collect::<Vec<_>>();
+    Ok(Command::Boards { assign: pairs(b.assign), pins: b.pins.map(pairs) })
+}
+
+/// The assignment (serial, board) after moving the devices named in `assign`; devices not
+/// named keep their board. Err = why it cannot be done (nothing is changed then). The one
+/// place that checks a reassignment: the HTTP handler answers with it, the serve loop
+/// applies its result.
+pub fn reassigned(current: &[(String, u8)], assign: &[(String, u8)], max_boards: u8) -> Result<Vec<(String, u8)>, String> {
+    let mut out = current.to_vec();
+    let mut named: Vec<&str> = Vec::new();
+    for (serial, board) in assign {
+        if named.contains(&serial.as_str()) {
+            return Err(format!("serial {serial} is named twice"));
+        }
+        named.push(serial);
+        if *board >= max_boards {
+            return Err(format!("board {board} does not exist (boards 0..{})", max_boards.saturating_sub(1)));
+        }
+        match out.iter_mut().find(|(s, _)| s == serial) {
+            Some(entry) => entry.1 = *board,
+            None => return Err(format!("no connected module has the serial {serial}")),
+        }
+    }
+    let mut boards: Vec<u8> = out.iter().map(|(_, b)| *b).collect();
+    boards.sort_unstable();
+    if let Some(w) = boards.windows(2).find(|w| w[0] == w[1]) {
+        return Err(format!("board {} would be given to two modules", w[0]));
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -385,6 +458,8 @@ struct Inner {
     /// Endpoints this session cannot serve: (path, why).
     refused: Mutex<Vec<(&'static str, String)>>,
     layouts: Mutex<LayoutState>,
+    /// Number of boards devices can be moved between while serving; None = fixed order.
+    reassign: Mutex<Option<u8>>,
     setup: Mutex<Arc<Setup>>,
     held: Mutex<BTreeSet<(u8, u8)>>,
     log: Mutex<EventLog>,
@@ -405,6 +480,7 @@ impl ApiHub {
         let inner = Inner {
             refused: Mutex::new(Vec::new()),
             layouts: Mutex::new(LayoutState::default()),
+            reassign: Mutex::new(None),
             setup: Mutex::new(Arc::new(setup)),
             held: Mutex::new(BTreeSet::new()),
             log: Mutex::new(EventLog::default()),
@@ -422,6 +498,31 @@ impl ApiHub {
 
     fn refusal(&self, path: &str) -> Option<String> {
         self.inner.refused.lock().unwrap().iter().find(|(p, _)| *p == path).map(|(_, r)| r.clone())
+    }
+
+    /// This backend can move its devices between `max_boards` boards while serving
+    /// (`POST /api/boards`); without this call the endpoint answers 501.
+    pub fn allow_reassign(&self, max_boards: u8) {
+        *self.inner.reassign.lock().unwrap() = Some(max_boards);
+    }
+
+    fn boards_json(&self) -> serde_json::Value {
+        let setup = self.setup();
+        let max = *self.inner.reassign.lock().unwrap();
+        serde_json::json!({ "backend": setup.backend, "reassign": max.is_some(), "max_boards": max, "boards": setup.boards, "modules": setup.modules })
+    }
+
+    /// Check a reassignment against what is connected and queue it. Err = (status, why).
+    fn request_boards(&self, cmd: Command) -> Result<(), (u16, String)> {
+        let setup = self.setup();
+        let Some(max) = *self.inner.reassign.lock().unwrap() else {
+            return Err((501, format!("the {} backend has a fixed board order; it cannot be changed while serving", setup.backend)));
+        };
+        if let Command::Boards { assign, .. } = &cmd {
+            let current: Vec<(String, u8)> = setup.modules.iter().map(|m| (m.serial.clone(), m.board)).collect();
+            reassigned(&current, assign, max).map_err(|e| (400, e))?;
+        }
+        if self.queue(cmd) { Ok(()) } else { Err((503, "serve loop has stopped".into())) }
     }
 
     /// Layout files next to `file` (same extension) become switchable.
@@ -745,6 +846,17 @@ fn handle(request: &rouille::Request, hub: &ApiHub) -> Response {
                 },
             }
         }
+        ("GET", "/api/boards") => Response::json(&hub.boards_json()),
+        ("POST", "/api/boards") => {
+            let body = match body_of(request) {
+                Ok(b) => b,
+                Err(r) => return r,
+            };
+            match parse_boards(&body).map_err(|e| (400, e)).and_then(|cmd| hub.request_boards(cmd)) {
+                Ok(()) => Response::json(&serde_json::json!({ "ok": true })),
+                Err((status, e)) => Response::json(&serde_json::json!({ "error": e })).with_status_code(status),
+            }
+        }
         ("POST", "/api/leds/overlay") => command_response(request, hub, parse_overlay),
         ("POST", "/api/notes") => command_response(request, hub, parse_notes),
         ("POST", "/api/midi") => command_response(request, hub, parse_midi),
@@ -948,6 +1060,78 @@ mod tests {
 
         let names: serde_json::Value = ureq::post(&url("/api/chords/name")).send_string(r#"{"edo":12,"pitch_classes":[0,4,7]}"#).unwrap().into_json().unwrap();
         assert!(names["chords"].as_array().unwrap().iter().any(|c| c["root_pc"] == 0 && c["best"] == "Major Triad \"maj\""), "{names}");
+    }
+
+    #[test]
+    fn setup_names_the_module_behind_each_board() {
+        let g = geometry_by_name("lumatone", 1).unwrap();
+        let mut setup = build_setup("openxen", &g, "x", 31, &cells(&[0, 1]), &[0, 1]);
+        assert!(setup.modules.is_empty());
+        assert_eq!(serde_json::to_value(&setup).unwrap()["modules"], serde_json::json!([]));
+        setup.modules = vec![
+            SetupModule { board: 0, serial: "AA".into(), pinned: true },
+            SetupModule { board: 1, serial: "BB".into(), pinned: false },
+        ];
+        let (hub, _rx) = ApiHub::new(setup);
+        let port = spawn(hub.clone(), 0).unwrap();
+        let v: serde_json::Value = ureq::get(&format!("http://127.0.0.1:{port}/api/setup")).call().unwrap().into_json().unwrap();
+        assert_eq!(v["modules"], serde_json::json!([{"board":0,"serial":"AA","pinned":true},{"board":1,"serial":"BB","pinned":false}]));
+    }
+
+    #[test]
+    fn reassignment_is_checked_in_one_place() {
+        let cur = vec![("A".to_string(), 0u8), ("B".to_string(), 1), ("C".to_string(), 3)];
+        let a = |v: &[(&str, u8)]| v.iter().map(|(s, b)| (s.to_string(), *b)).collect::<Vec<_>>();
+        // a swap; C is not named and keeps its board
+        assert_eq!(reassigned(&cur, &a(&[("A", 1), ("B", 0)]), 5).unwrap(), a(&[("A", 1), ("B", 0), ("C", 3)]));
+        // onto a free board
+        assert_eq!(reassigned(&cur, &a(&[("C", 4)]), 5).unwrap(), a(&[("A", 0), ("B", 1), ("C", 4)]));
+        assert_eq!(reassigned(&cur, &[], 5).unwrap(), cur);
+        assert!(reassigned(&cur, &a(&[("A", 1)]), 5).unwrap_err().contains("two modules"));
+        assert!(reassigned(&cur, &a(&[("A", 5)]), 5).unwrap_err().contains("does not exist"));
+        assert!(reassigned(&cur, &a(&[("Z", 2)]), 5).unwrap_err().contains("no connected module"));
+        assert!(reassigned(&cur, &a(&[("A", 1), ("A", 2)]), 5).unwrap_err().contains("twice"));
+    }
+
+    #[test]
+    fn boards_endpoint_lists_modules_and_queues_a_checked_reassignment() {
+        let g = geometry_by_name("lumatone", 1).unwrap();
+        let mut setup = build_setup("openxen", &g, "x", 31, &cells(&[0, 1]), &[0, 1]);
+        setup.modules = vec![
+            SetupModule { board: 0, serial: "AA".into(), pinned: true },
+            SetupModule { board: 1, serial: "BB".into(), pinned: false },
+        ];
+        let (hub, commands) = ApiHub::new(setup);
+        let port = spawn(hub.clone(), 0).unwrap();
+        let url = format!("http://127.0.0.1:{port}/api/boards");
+        let status = |body: &str| match ureq::post(&url).send_string(body) {
+            Ok(r) => r.status(),
+            Err(ureq::Error::Status(s, _)) => s,
+            Err(e) => panic!("{e}"),
+        };
+        // a backend that has not said it can reassign: 501, nothing queued
+        let v: serde_json::Value = ureq::get(&url).call().unwrap().into_json().unwrap();
+        assert_eq!((v["reassign"].as_bool(), v["max_boards"].is_null()), (Some(false), true));
+        assert_eq!(status(r#"{"assign":[{"serial":"AA","board":1},{"serial":"BB","board":0}]}"#), 501);
+        assert!(commands.try_recv().is_err());
+
+        hub.allow_reassign(5);
+        let v: serde_json::Value = ureq::get(&url).call().unwrap().into_json().unwrap();
+        assert_eq!((v["reassign"].as_bool(), v["max_boards"].as_u64(), v["backend"].as_str()), (Some(true), Some(5), Some("openxen")));
+        assert_eq!(v["modules"][1], serde_json::json!({"board":1,"serial":"BB","pinned":false}));
+        // refused: collision, unknown serial, board out of range, not JSON
+        for bad in [r#"{"assign":[{"serial":"AA","board":1}]}"#, r#"{"assign":[{"serial":"ZZ","board":2}]}"#, r#"{"assign":[{"serial":"AA","board":7}]}"#, "nope"] {
+            assert_eq!(status(bad), 400, "{bad}");
+        }
+        assert!(commands.try_recv().is_err());
+        assert_eq!(status(r#"{"assign":[{"serial":"AA","board":1},{"serial":"BB","board":0}],"pins":[{"serial":"AA","board":1}]}"#), 200);
+        assert_eq!(
+            commands.try_recv().unwrap(),
+            Command::Boards { assign: vec![("AA".into(), 1), ("BB".into(), 0)], pins: Some(vec![("AA".into(), 1)]) }
+        );
+        // pins alone (unpin): nothing moves
+        assert_eq!(status(r#"{"pins":[]}"#), 200);
+        assert_eq!(commands.try_recv().unwrap(), Command::Boards { assign: vec![], pins: Some(vec![]) });
     }
 
     #[test]

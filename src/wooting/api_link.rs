@@ -246,6 +246,8 @@ impl ApiLink {
                     self.send_overlay(boards);
                 }
                 Command::Layout { name } => self.layout_request = Some(name),
+                // refused by the hub (501): the board order of this backend is fixed
+                Command::Boards { .. } => {}
                 Command::Midi { notes } => {
                     for n in &notes {
                         self.notes.raw_on(n, now, midi);

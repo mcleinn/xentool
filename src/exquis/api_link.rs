@@ -336,6 +336,8 @@ impl ApiLink {
                         None => PathBuf::from(file),
                     });
                 }
+                // refused by the hub (501): the board order of this backend is fixed
+                Command::Boards { .. } => {}
                 Command::Midi { notes } => {
                     if tunings.is_some() {
                         for n in &notes {
