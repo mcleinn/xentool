@@ -211,6 +211,22 @@ pub enum Commands {
         #[command(flatten)]
         color: ColorCorrectionArgs,
     },
+    /// Check and change the order of the keyboard's boards (openxen modules).
+    ///
+    /// Lists the connected boards from left to right (position, colour, serial number,
+    /// pinned in the settings or assigned automatically), lights each board in the colour
+    /// of its position (1 red, 2 orange, 3 green, 4 blue, 5 white) and asks whether that is
+    /// what you see. Answer n (or type the colours as you see them, left to right) to put
+    /// them in order: the new order is pinned in settings.json (`openxen.boards`, serial →
+    /// board; a backup copy is kept), applied at once, lit again and asked again.
+    ///
+    /// When you confirm (y or Enter), quit, do not answer in time or press Ctrl+C, the
+    /// identification colours go away at once: with a `xentool serve` running the layout
+    /// colours return, otherwise the LEDs go off.
+    ///
+    /// Works through a running `xentool serve --api` (the order changes while it plays), or
+    /// on the modules directly when nothing is serving.
+    Boards(BoardsArgs),
     /// List known hex-grid geometries (Exquis, Lumatone, Wooting).
     Geometries,
     /// Visualize one geometry as an SVG diagram of dots + neighbor connections.
@@ -256,6 +272,61 @@ pub enum Commands {
         velocity: u8,
         #[arg(long, default_value = "all")]
         device: DeviceSelection,
+    },
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct BoardsArgs {
+    #[command(subcommand)]
+    pub command: Option<BoardsCommand>,
+    /// Longest time the boards stay lit while a question waits for its answer; then the
+    /// lighting is put back and the command ends. With --yes or without a terminal: how
+    /// long the colours are shown. 0 = list only, no lights, no question.
+    #[arg(long, default_value_t = 60, global = true, value_name = "SECONDS")]
+    pub seconds: u64,
+    /// Do not ask whether the order is correct: show the colours for --seconds, then put
+    /// the lighting back. (Also what happens when the input is not a terminal.)
+    #[arg(long, short = 'y', global = true)]
+    pub yes: bool,
+    /// Port of the local API of a running `xentool serve --api`.
+    #[arg(long, default_value_t = 9098, global = true)]
+    pub api_port: u16,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum BoardsCommand {
+    /// Put the boards in order: state the colours (or positions) as you SEE them from left
+    /// to right, e.g. `xentool boards order orange red green blue white` or `... 2 1 3 4 5`.
+    ///
+    /// The new serial → board pinning is shown (before / after), written to settings.json
+    /// for all connected modules (pins of modules that are not connected stay, unless a
+    /// connected module now has their position: those are removed and named), applied at
+    /// once and lit again for you to confirm.
+    Order {
+        /// Colour names (red, orange, green, blue, white; a beginning is enough) or
+        /// positions (1..5), each connected board exactly once.
+        #[arg(required = true, value_name = "COLOUR|POSITION")]
+        seen: Vec<String>,
+        /// Show the listing and the before / after; write and change nothing, no lights.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Pin every connected module to the position it has now (no reordering).
+    Pin {
+        /// Show what would be pinned; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove a pin (the module then takes the lowest free position when it connects).
+    Unpin {
+        /// Serial number (or a beginning or end of it that fits one pinned module).
+        serial: Option<String>,
+        /// Remove every pin.
+        #[arg(long)]
+        all: bool,
+        /// Show what would be removed; write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -391,6 +462,27 @@ mod tests {
             }
             _ => panic!("wrong command parsed"),
         }
+    }
+
+    #[test]
+    fn parses_boards_commands() {
+        let boards = |args: &[&str]| match Cli::parse_from([&["xentool", "boards"], args].concat()).command {
+            Commands::Boards(b) => b,
+            _ => panic!("wrong command parsed"),
+        };
+        let b = boards(&[]);
+        assert!(b.command.is_none());
+        assert_eq!((b.seconds, b.yes, b.api_port), (60, false, 9098));
+        // the options are accepted before and after the subcommand
+        let b = boards(&["order", "orange", "red", "3", "--dry-run", "--seconds", "5", "-y"]);
+        assert_eq!((b.seconds, b.yes), (5, true));
+        match b.command {
+            Some(BoardsCommand::Order { seen, dry_run }) => assert_eq!((seen, dry_run), (vec!["orange".to_string(), "red".into(), "3".into()], true)),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(boards(&["--api-port", "9000", "pin"]).command, Some(BoardsCommand::Pin { dry_run: false })));
+        assert!(matches!(boards(&["unpin", "--all"]).command, Some(BoardsCommand::Unpin { serial: None, all: true, dry_run: false })));
+        assert!(Cli::try_parse_from(["xentool", "boards", "order"]).is_err(), "an order needs what is seen");
     }
 
     #[test]

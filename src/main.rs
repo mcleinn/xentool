@@ -1,4 +1,5 @@
 mod api;
+mod boards;
 mod cli;
 mod config;
 mod edit;
@@ -154,6 +155,7 @@ fn main() -> Result<()> {
                 cmd_load(file, color.to_correction()?)
             }
         }
+        Commands::Boards(args) => boards::cmd_boards(args),
         Commands::Geometries => cmd_geometries(),
         Commands::Geometry { name, boards, out, no_open } => {
             cmd_geometry(name, boards, out, !no_open)

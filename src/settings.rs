@@ -113,7 +113,7 @@ fn ox_led_highlight() -> String { "FFFFFF".into() }
 fn ox_led_timeout() -> u16 { 2000 }
 fn ox_led_screensaver() -> u32 { 300 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenxenBoardSettings {
     pub serial: String,
     pub board: u8,
@@ -455,9 +455,63 @@ pub fn store_last_layout(kind: crate::layouts::LayoutKind, path: &std::path::Pat
     }
 }
 
+/// Name of a backup copy next to `path`: `<file>.<tag>-<local date>-<time>`.
+pub fn backup_path(path: &std::path::Path, tag: &str) -> PathBuf {
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let stamp = format!(
+        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        now.year(),
+        now.month() as u8,
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "settings.json".into());
+    path.with_file_name(format!("{name}.{tag}-{stamp}"))
+}
+
+/// Replace `openxen.boards` (module serial → board) in the settings file at `path`;
+/// everything else keeps its value. Used by `xentool boards`.
+///
+/// `backup`: copy the file there first (not if it does not exist yet, and an existing
+/// backup of that name is not overwritten). Returns the backup that was made. A file that
+/// cannot be parsed is an error and is left as it is. Read-modify-write on the whole file,
+/// like `store_last_layout`.
+pub fn store_openxen_boards(path: &std::path::Path, boards: &[OpenxenBoardSettings], backup: Option<&std::path::Path>) -> Result<Option<PathBuf>> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut settings: Settings = match &existing {
+        Some(text) => serde_json::from_str(text).with_context(|| format!("{} cannot be parsed; it is left as it is", path.display()))?,
+        None => Settings::default(),
+    };
+    settings.openxen.boards = boards.to_vec();
+    let json = serde_json::to_string_pretty(&settings).context("serialising the settings")?;
+    let mut made = None;
+    match (&existing, backup) {
+        (Some(text), Some(b)) if !b.exists() => {
+            std::fs::write(b, text).with_context(|| format!("writing the backup {}", b.display()))?;
+            made = Some(b.to_path_buf());
+        }
+        _ => {}
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(path, json).with_context(|| format!("writing {}", path.display()))?;
+    Ok(made)
+}
+
 /// Read the settings file. Missing file → all defaults (no error, no write).
 pub fn load() -> Settings {
-    let path = default_settings_path();
+    load_from(&default_settings_path())
+}
+
+/// `load` for a settings file at another place.
+pub fn load_from(path: &std::path::Path) -> Settings {
     if !path.exists() {
         return Settings::default();
     }
